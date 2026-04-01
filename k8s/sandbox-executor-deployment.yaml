@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-executor
+  namespace: secureai
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: sandbox-executor
+  template:
+    metadata:
+      labels:
+        app: sandbox-executor
+    spec:
+      # Pod security policy
+      securityContext:
+        runAsNonRoot: true
+        fsReadOnlyRootFilesystem: true
+        
+      containers:
+      - name: executor
+        image: secureai/sandbox-runner:1.0
+        
+        # Resource limits (cgroups)
+        resources:
+          requests:
+            cpu: 500m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 512Mi
+        
+        # Security context
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        
+        # Temporary storage for sandbox
+        volumeMounts:
+        - name: sandbox-tmp
+          mountPath: /var/sandbox
+          
+      volumes:
+      - name: sandbox-tmp
+        emptyDir:
+          sizeLimit: 1Gi
+      
+      # Affinity: spread across nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values: ["sandbox-executor"]
+              topologyKey: kubernetes.io/hostname
