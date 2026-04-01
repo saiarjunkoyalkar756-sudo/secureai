@@ -1,4 +1,5 @@
 import express, { Request, Response } from 'express';
+import cors from 'cors';
 import { PermissionEngine } from '../core/permissions/engine';
 import { SandboxEngine } from '../sandbox/sandbox-engine';
 import { validateExecutionRequest } from '../utils/validation';
@@ -21,13 +22,13 @@ const authenticate = () => (req: Request, res: Response, next: any) => {
 };
 
 const app = express();
+app.use(cors()); // Reviewer feedback: Enable CORS for dashboard communication
 app.use(express.json());
 
 /**
  * POST /v1/execute
  */
 app.post('/v1/execute', authenticate(), async (req: Request, res: Response) => {
-  // 1. HARDENED VALIDATION (Reviewer feedback addressed!)
   const validation = validateExecutionRequest(req.body);
   if (!validation.isValid) {
     return res.status(400).json({ error: 'Validation failed', details: validation.errors });
