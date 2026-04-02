@@ -17,7 +17,9 @@ export interface Permission {
     maxNetworkBandwidth?: number; // Mbps
     requiresApproval?: boolean;
     approverRole?: 'admin' | 'security' | 'owner';
+    expiresAt?: Date;
   };
+
   createdAt: Date;
   createdBy: string;
 }
@@ -31,4 +33,10 @@ export interface PermissionRequest {
   approvedBy?: string;
   approvalTime?: Date;
   expiresAt: Date;
+  createdAt: Date;
+  reason?: string;
+  code?: string;
+  language?: string;
 }
+
+

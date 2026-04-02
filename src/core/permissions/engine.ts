@@ -1,27 +1,25 @@
-// Mock types for missing dependencies to ensure TypeScript compiles
-export interface Permission {
-  id: string;
-  type: string;
-  resource: string;
-  action: string;
-  createdAt: Date;
-  createdBy: string;
+import { Permission, PermissionRequest, PermissionType } from './types';
+
+export interface CodeAnalysisResult {
+  filesAccessed: string[];
+  networksAccessed: string[];
+  subprocesses: string[];
+  envVarsAccessed: string[];
+  suspiciousPatterns: {
+    pattern: string;
+    severity: 'critical' | 'high' | 'medium' | 'low';
+    recommendation: string;
+  }[];
 }
 
-export interface PermissionRequest {
-  id: string;
-  executionId: string;
-  requestedPermissions: Permission[];
-  status: 'pending' | 'approved' | 'rejected' | 'expired';
-  requestedBy: string;
-  approvedBy?: string;
-  approvalTime?: Date;
-  expiresAt: Date;
+export interface PermissionCheckResult {
+  canExecute: boolean;
+  blockedBy: Permission[];
+  autoApproved: any[];
+  requiresApprovalFor: Permission[];
 }
 
-interface ExecutionRequest { id: string; userId: string; code: string; }
-interface PermissionCheckResult { canExecute: boolean; blockedBy: Permission[]; autoApproved: any[]; }
-interface CodeAnalysis { filesAccessed: string[]; networksAccessed: string[]; subprocesses: string[]; envVarsAccessed: string[]; suspiciousPatterns: any[]; }
+interface ExecutionRequest { id: string; userId: string; code: string; language: string; }
 
 // Minimal database interface
 interface IDatabase {
@@ -40,8 +38,8 @@ export class PermissionEngine {
     // Instantiate mocks...
     this.auditLog = { log: (msg: any) => console.log('Audit:', msg) };
     this.mlAnomalyDetector = { score: async () => 0.1 };
-    this.slackClient = { sendMessage: async () => {} };
-    this.emailClient = { send: async () => {} };
+    this.slackClient = { sendMessage: async (id: string, msg: string) => console.log(`[Slack -> ${id}]: ${msg}`) };
+    this.emailClient = { send: async (opts: any) => console.log(`[Email -> ${opts.to}]: ${opts.subject}`) };
   }
 
   /**
@@ -51,13 +49,13 @@ export class PermissionEngine {
     execution: ExecutionRequest,
     userRole: 'admin' | 'executor' | 'approver'
   ): Promise<PermissionCheckResult> {
-    const staticAnalysis = await this.analyzeCodeStatically(execution.code);
-    const requiredPermissions = this.inferPermissions(staticAnalysis);
+    const analysis = await this.analyzeCodeStatically(execution.code, execution.language);
+    const requiredPermissions = this.inferPermissions(analysis);
 
     const results = await Promise.all(
       requiredPermissions.map(async (perm) => {
         const allowed = this.permissionsDb.prepare(
-          'SELECT * FROM permissions WHERE resource = ? AND type = ?'
+          'SELECT * FROM permissions WHERE resource = ? AND type = ? AND action = "allow"'
         ).all(perm.resource, perm.type) as any[];
 
         if (allowed.length === 0) {
@@ -95,7 +93,8 @@ export class PermissionEngine {
         requestedPermissions: needsApproval,
         requestedBy: execution.userId,
         status: 'pending',
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000)
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        createdAt: new Date()
       });
 
       this.auditLog.log({
@@ -108,8 +107,153 @@ export class PermissionEngine {
     return {
       canExecute: needsApproval.length === 0,
       blockedBy: needsApproval,
-      autoApproved: results.filter(r => !r.approvalRequired)
+      autoApproved: results.filter(r => !r.approvalRequired).map(r => r.permission),
+      requiresApprovalFor: needsApproval
     };
+  }
+
+  /**
+   * Performs static analysis using regex for the MVP
+   */
+  async analyzeCodeStatically(code: string, language: string): Promise<CodeAnalysisResult> {
+    const analysis: CodeAnalysisResult = {
+      filesAccessed: [],
+      networksAccessed: [],
+      subprocesses: [],
+      envVarsAccessed: [],
+      suspiciousPatterns: []
+    };
+
+    // 1. Extract File Paths
+    const filePatterns = [
+      /open\(['"](.+?)['"]/g,             // Python/JS open
+      /read_file\(['"](.+?)['"]/g,        // General
+      /fs\.\w+Sync\(['"](.+?)['"]/g,      // Node.js fs
+      /cat\s+([^\s;&|<>]+)/g,             // Bash cat
+    ];
+    this.extractMatches(code, filePatterns, analysis.filesAccessed);
+
+    // 2. Extract Network Domains
+    const networkPatterns = [
+      /https?:\/\/([a-zA-Z0-9.-]+)/g,     // URLs
+      /requests\.\w+\(['"]https?:\/\/([a-zA-Z0-9.-]+)/g, // Python requests
+      /fetch\(['"]https?:\/\/([a-zA-Z0-9.-]+)/g,        // JS fetch
+      /curl\s+.*?https?:\/\/([a-zA-Z0-9.-]+)/g,         // Bash curl
+    ];
+    this.extractMatches(code, networkPatterns, analysis.networksAccessed);
+
+    // 3. Extract Subprocesses
+    const subprocessPatterns = [
+      /os\.system\(['"](.+?)['"]/g,        // Python os.system
+      /subprocess\.\w+\(\[(.+?)\]/g,      // Python subprocess
+      /exec\(['"](.+?)['"]/g,             // JS/Bash exec
+      /child_process\.\w+\(['"](.+?)['"]/g // Node.js child_process
+    ];
+    this.extractMatches(code, subprocessPatterns, analysis.subprocesses);
+
+    // 4. Extract Env Vars
+    const envPatterns = [
+      /os\.environ\[['"](.+?)['"]\]/g,    // Python
+      /process\.env\.(\w+)/g,             // JS
+      /getenv\(['"](.+?)['"]/g,           // General
+      /\$(\w+)/g                          // Bash
+    ];
+    this.extractMatches(code, envPatterns, analysis.envVarsAccessed);
+
+    // 5. Threat Detection
+    if (code.includes('rm -rf /')) {
+      analysis.suspiciousPatterns.push({
+        pattern: 'destructive_command',
+        severity: 'critical',
+        recommendation: 'Block execution. Code contains recursive deletion of root directory.'
+      });
+    }
+
+    if (code.match(/chmod\s+777/)) {
+      analysis.suspiciousPatterns.push({
+        pattern: 'insecure_permissions',
+        severity: 'high',
+        recommendation: 'Audit required. Code is setting world-writable permissions.'
+      });
+    }
+
+    const mlScore = await this.mlAnomalyDetector.score(code);
+    if (mlScore > 0.7) {
+      analysis.suspiciousPatterns.push({
+        pattern: 'high_anomaly_score',
+        score: mlScore,
+        reason: 'Code structure unusual compared to known safe code'
+      } as any);
+    }
+
+    return analysis;
+  }
+
+  private extractMatches(code: string, patterns: RegExp[], target: string[]) {
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(code)) !== null) {
+        if (match[1] && !target.includes(match[1])) {
+          target.push(match[1]);
+        }
+      }
+    }
+  }
+
+  /**
+   * Converts analysis results to Permission objects
+   */
+  inferPermissions(analysis: CodeAnalysisResult): Permission[] {
+    const permissions: Permission[] = [];
+
+    const now = new Date();
+    const createdBy = 'system_analysis';
+
+    analysis.filesAccessed.forEach(file => {
+      permissions.push({
+        id: `file_${Math.random().toString(36).substring(7)}`,
+        type: 'file_read',
+        resource: file,
+        action: 'audit_only',
+        createdAt: now,
+        createdBy
+      });
+    });
+
+    analysis.networksAccessed.forEach(domain => {
+      permissions.push({
+        id: `net_${Math.random().toString(36).substring(7)}`,
+        type: 'network_egress',
+        resource: domain,
+        action: 'audit_only',
+        createdAt: now,
+        createdBy
+      });
+    });
+
+    analysis.subprocesses.forEach(cmd => {
+      permissions.push({
+        id: `proc_${Math.random().toString(36).substring(7)}`,
+        type: 'subprocess_exec',
+        resource: cmd,
+        action: 'audit_only',
+        createdAt: now,
+        createdBy
+      });
+    });
+
+    analysis.envVarsAccessed.forEach(env => {
+      permissions.push({
+        id: `env_${Math.random().toString(36).substring(7)}`,
+        type: 'env_read',
+        resource: env,
+        action: 'audit_only',
+        createdAt: now,
+        createdBy
+      });
+    });
+
+    return permissions;
   }
 
   private async sendApprovalRequest(request: PermissionRequest) {
@@ -120,14 +264,13 @@ export class PermissionEngine {
       
       const approvalUrl = `https://your-domain.com/approvals/${request.id}`;
       const message = `
-        ${request.requestedBy} requested execution approval.
+        [SecureAI] Approval Required for ${request.requestedBy}
         
-        Permissions needed:
+        Execution ID: ${request.executionId}
+        Requested Permissions:
         ${request.requestedPermissions.map(p => `- ${p.type}: ${p.resource}`).join('\n')}
         
-        Approve: ${approvalUrl}?action=approve
-        Reject: ${approvalUrl}?action=reject
-        
+        Approve/Reject: ${approvalUrl}
         Expires: ${request.expiresAt.toISOString()}
       `;
 
@@ -143,43 +286,8 @@ export class PermissionEngine {
     }
   }
 
-  private async analyzeCodeStatically(code: string): Promise<CodeAnalysis> {
-    const analysis: CodeAnalysis = {
-      filesAccessed: this.extractFilePaths(code),
-      networksAccessed: this.extractDomains(code),
-      subprocesses: this.extractCommands(code),
-      envVarsAccessed: this.extractEnvVars(code),
-      suspiciousPatterns: []
-    };
-
-    const mlScore = await this.mlAnomalyDetector.score(code);
-    if (mlScore > 0.7) {
-      analysis.suspiciousPatterns.push({
-        pattern: 'high_anomaly_score',
-        score: mlScore,
-        reason: 'Code structure unusual compared to known safe code'
-      });
-    }
-
-    return analysis;
+  private async getApproversForPermissions(perms: Permission[]) { 
+    return [{ email: 'admin@acme.com', slackId: 'U1234', preferredChannel: 'slack' }]; 
   }
-
-  private inferPermissions(analysis: CodeAnalysis): Permission[] {
-    const permissions: Permission[] = [];
-
-    for (const file of analysis.filesAccessed) {
-      permissions.push({ id: `file_${file}`, type: 'file_read', resource: file, action: 'audit_only', createdAt: new Date(), createdBy: 'system' });
-    }
-    for (const domain of analysis.networksAccessed) {
-      permissions.push({ id: `net_${domain}`, type: 'network_egress', resource: domain, action: 'audit_only', createdAt: new Date(), createdBy: 'system' });
-    }
-
-    return permissions;
-  }
-
-  private extractFilePaths(code: string) { return ['mock/path']; }
-  private extractDomains(code: string) { return ['api.example.com']; }
-  private extractCommands(code: string) { return []; }
-  private extractEnvVars(code: string) { return []; }
-  private async getApproversForPermissions(perms: Permission[]) { return [{ email: 'admin@acme.com', slackId: 'U1234', preferredChannel: 'slack' }]; }
 }
+
