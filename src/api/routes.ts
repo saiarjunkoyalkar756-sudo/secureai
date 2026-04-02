@@ -9,7 +9,7 @@ import { EmailService } from '../services/email';
 import * as path from 'path';
 
 // --- DATABASE SETUP ---
-const dbPath = path.join(__dirname, '../../secureai.db');
+const dbPath = path.join(__dirname, '../../../../secureai.db');
 const db = new PermissionDB(dbPath);
 
 // --- SERVICES ---

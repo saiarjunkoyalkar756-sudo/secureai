@@ -13,7 +13,7 @@ export interface AuthRequest extends Request {
   user?: User;
 }
 
-const dbPath = path.join(__dirname, '../../secureai.db');
+const dbPath = path.join(__dirname, '../../../../secureai.db');
 const db = new PermissionDB(dbPath);
 
 /**
