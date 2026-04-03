@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "name": "secureai-landing-page",
+  "framework": "vite",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/" }
+  ],
+  "cleanUrls": true
+}

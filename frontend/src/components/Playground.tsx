@@ -13,8 +13,9 @@ export const Playground: React.FC = () => {
     setLoading(true);
     setResult(null);
     try {
-      // Connecting specifically to the live Railway backend the user deployed earlier
-      const res = await fetch('https://secureai-production-bf5b.up.railway.app/v1/execute', {
+      // Use dynamic environment variable for the API URL
+      const apiUrl = import.meta.env.VITE_API_URL || 'https://secureai-production-bf5b.up.railway.app';
+      const res = await fetch(`${apiUrl}/v1/execute`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
