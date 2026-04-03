@@ -69,6 +69,31 @@ npm test
 
 ---
 
+## 📡 API Usage Example
+
+Integrate SecureAI into your AI agent's workflow using a simple REST request:
+
+```javascript
+const API_URL = "https://secureai-production-bf5b.up.railway.app/v1/execute";
+
+const response = await fetch(API_URL, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer sk_test_admin_123456" 
+  },
+  body: JSON.stringify({
+    language: "python",
+    code: "print('Hello from SecureAI and my live backend!')"
+  })
+});
+
+const data = await response.json();
+console.log(data);
+```
+
+---
+
 ## 🗺️ Roadmap
 - [x] Core Architecture & MVP Prototype
 - [x] Immutable Audit Logging
