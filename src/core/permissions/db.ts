@@ -1,5 +1,11 @@
 import { Permission, PermissionRequest, PermissionType } from './types';
+import * as crypto from 'crypto';
 
+/**
+ * PermissionDB — Persistent database layer for the SecureAI platform.
+ * Supports both real SQLite (via better-sqlite3) and an in-memory mock fallback.
+ * API keys are stored as SHA-256 hashes for security.
+ */
 export class PermissionDB {
   private db: any;
   private isMock: boolean = false;
@@ -15,10 +21,11 @@ export class PermissionDB {
     try {
       const Database = require('better-sqlite3');
       this.db = new Database(dbPath);
+      this.db.pragma('journal_mode = WAL'); // Better concurrent access
       this.initializeDatabase();
-      console.log(`[Database] Using persistent SQLite at ${dbPath}`);
+      console.log(`[Database] ✅ Using persistent SQLite at ${dbPath}`);
     } catch (err) {
-      console.warn(`[Database] Failed to load better-sqlite3. Falling back to IN-MEMORY MOCK MODE.`);
+      console.warn(`[Database] ⚠ Failed to load better-sqlite3. Falling back to IN-MEMORY MOCK MODE.`);
       console.warn(`[Database] Note: Data will NOT persist after server restart.`);
       this.isMock = true;
     }
@@ -76,7 +83,8 @@ export class PermissionDB {
 
       CREATE TABLE IF NOT EXISTS api_keys (
         id TEXT PRIMARY KEY,
-        key TEXT UNIQUE NOT NULL,
+        keyHash TEXT NOT NULL,
+        keyPrefix TEXT NOT NULL,
         userId TEXT NOT NULL,
         organizationId TEXT,
         status TEXT DEFAULT 'active', -- active, revoked
@@ -86,8 +94,55 @@ export class PermissionDB {
 
       CREATE INDEX IF NOT EXISTS idx_perm_resource ON permissions(resource);
       CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(status);
-      CREATE INDEX IF NOT EXISTS idx_api_keys_key ON api_keys(key);
+      CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(keyHash);
     `);
+
+    // Migration: if the old 'key' column exists, migrate to 'keyHash'
+    try {
+      const columns = this.db.pragma('table_info(api_keys)') as any[];
+      const hasKeyCol = columns.some((c: any) => c.name === 'key');
+      const hasKeyHash = columns.some((c: any) => c.name === 'keyHash');
+      if (hasKeyCol && !hasKeyHash) {
+        console.log('[Database] 🔄 Migrating api_keys to hashed storage...');
+        const rows = this.db.prepare('SELECT id, key, userId, organizationId, status FROM api_keys').all() as any[];
+        this.db.exec('DROP TABLE api_keys');
+        this.db.exec(`
+          CREATE TABLE api_keys (
+            id TEXT PRIMARY KEY,
+            keyHash TEXT NOT NULL,
+            keyPrefix TEXT NOT NULL,
+            userId TEXT NOT NULL,
+            organizationId TEXT,
+            status TEXT DEFAULT 'active',
+            createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(userId) REFERENCES users(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(keyHash);
+        `);
+        const insertStmt = this.db.prepare(
+          'INSERT INTO api_keys (id, keyHash, keyPrefix, userId, organizationId, status) VALUES (?, ?, ?, ?, ?, ?)'
+        );
+        for (const row of rows) {
+          insertStmt.run(
+            row.id,
+            PermissionDB.hashApiKey(row.key),
+            row.key.substring(0, 8),
+            row.userId,
+            row.organizationId,
+            row.status
+          );
+        }
+        console.log(`[Database] ✅ Migrated ${rows.length} API key(s) to hashed storage.`);
+      }
+    } catch (_) {
+      // Table might not exist yet, that's fine
+    }
+  }
+
+  // --- Static Helpers ---
+
+  static hashApiKey(rawKey: string): string {
+    return crypto.createHash('sha256').update(rawKey).digest('hex');
   }
 
   // --- Permission Methods ---
@@ -126,12 +181,20 @@ export class PermissionDB {
     return row ? this.mapPermissionRow(row) : null;
   }
 
+  getAllPermissions(): Permission[] {
+    if (this.isMock) {
+      return Array.from(this.mockStore.permissions.values()).map((r: any) => this.mapPermissionRow(r));
+    }
+    const rows = this.db.prepare('SELECT * FROM permissions ORDER BY createdAt DESC').all() as any[];
+    return rows.map(this.mapPermissionRow);
+  }
+
   queryPermissions(filters: { type?: string; resource?: string; action?: string }): Permission[] {
     if (this.isMock) {
       let results = Array.from(this.mockStore.permissions.values());
       if (filters.type) results = results.filter((p: any) => p.type === filters.type);
       if (filters.resource) results = results.filter((p: any) => p.resource.includes(filters.resource));
-      return results.map(r => this.mapPermissionRow(r));
+      return results.map((r: any) => this.mapPermissionRow(r));
     }
     let sql = 'SELECT * FROM permissions WHERE 1=1';
     const params: any[] = [];
@@ -168,7 +231,7 @@ export class PermissionDB {
       if (!row) return null;
       return {
         ...row,
-        requestedPermissions: JSON.parse(row.permissions),
+        requestedPermissions: typeof row.permissions === 'string' ? JSON.parse(row.permissions) : row.requestedPermissions,
         expiresAt: new Date(row.expiresAt),
         createdAt: new Date(row.createdAt),
         approvalTime: row.approvalTime ? new Date(row.approvalTime) : undefined
@@ -195,26 +258,99 @@ export class PermissionDB {
     stmt.run(status, approverId, reason || null, new Date().toISOString(), id);
   }
 
-  // --- Auth Methods ---
+  // --- Auth Methods (with hashed API keys) ---
 
-  getUserByApiKey(key: string) {
+  getUserByApiKey(rawKey: string) {
+    const keyHash = PermissionDB.hashApiKey(rawKey);
+
     if (this.isMock) {
-      const apiKey = Array.from(this.mockStore.api_keys.values()).find((k: any) => k.key === key && k.status === 'active');
+      const apiKey = Array.from(this.mockStore.api_keys.values()).find(
+        (k: any) => k.keyHash === keyHash && k.status === 'active'
+      );
       if (!apiKey) return null;
       const user = this.mockStore.users.get((apiKey as any).userId);
       return user ? { ...user, keyOrgId: (apiKey as any).organizationId } : null;
     }
-    return this.db.prepare(`SELECT u.*, k.organizationId as keyOrgId FROM users u JOIN api_keys k ON u.id = k.userId WHERE k.key = ? AND k.status = 'active'`).get(key) as any;
+    return this.db.prepare(
+      `SELECT u.*, k.organizationId as keyOrgId FROM users u JOIN api_keys k ON u.id = k.userId WHERE k.keyHash = ? AND k.status = 'active'`
+    ).get(keyHash) as any;
   }
 
   createUser(user: any) {
     if (this.isMock) { this.mockStore.users.set(user.id, { ...user }); return; }
-    this.db.prepare(`INSERT INTO users (id, email, organizationId, role) VALUES (?, ?, ?, ?)`).run(user.id, user.email, user.organizationId, user.role);
+    this.db.prepare(`INSERT OR IGNORE INTO users (id, email, organizationId, role) VALUES (?, ?, ?, ?)`).run(user.id, user.email, user.organizationId, user.role);
   }
 
-  createApiKey(id: string, userId: string, key: string, organizationId: string) {
-    if (this.isMock) { this.mockStore.api_keys.set(id, { id, userId, key, organizationId, status: 'active' }); return; }
-    this.db.prepare(`INSERT INTO api_keys (id, userId, key, organizationId) VALUES (?, ?, ?, ?)`).run(id, userId, key, organizationId);
+  getUserById(id: string) {
+    if (this.isMock) { return this.mockStore.users.get(id) || null; }
+    return this.db.prepare('SELECT * FROM users WHERE id = ?').get(id) as any;
+  }
+
+  createApiKey(id: string, userId: string, rawKey: string, organizationId: string) {
+    const keyHash = PermissionDB.hashApiKey(rawKey);
+    const keyPrefix = rawKey.substring(0, 8);
+
+    if (this.isMock) {
+      this.mockStore.api_keys.set(id, { id, userId, keyHash, keyPrefix, organizationId, status: 'active' });
+      return;
+    }
+    this.db.prepare(
+      `INSERT OR IGNORE INTO api_keys (id, keyHash, keyPrefix, userId, organizationId) VALUES (?, ?, ?, ?, ?)`
+    ).run(id, keyHash, keyPrefix, userId, organizationId);
+  }
+
+  revokeApiKey(id: string) {
+    if (this.isMock) {
+      const key = this.mockStore.api_keys.get(id);
+      if (key) key.status = 'revoked';
+      return;
+    }
+    this.db.prepare('UPDATE api_keys SET status = ? WHERE id = ?').run('revoked', id);
+  }
+
+  // --- Database Health ---
+
+  isHealthy(): boolean {
+    if (this.isMock) return true;
+    try {
+      this.db.prepare('SELECT 1').get();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  getStats() {
+    if (this.isMock) {
+      return {
+        users: this.mockStore.users.size,
+        apiKeys: this.mockStore.api_keys.size,
+        permissions: this.mockStore.permissions.size,
+        approvalRequests: this.mockStore.approval_requests.size,
+        mode: 'mock'
+      };
+    }
+    return {
+      users: (this.db.prepare('SELECT COUNT(*) as count FROM users').get() as any).count,
+      apiKeys: (this.db.prepare('SELECT COUNT(*) as count FROM api_keys').get() as any).count,
+      permissions: (this.db.prepare('SELECT COUNT(*) as count FROM permissions').get() as any).count,
+      approvalRequests: (this.db.prepare('SELECT COUNT(*) as count FROM approval_requests').get() as any).count,
+      mode: 'sqlite'
+    };
+  }
+
+  // Proxy method so PermissionEngine can call db.prepare() directly
+  prepare(sql: string) {
+    if (this.isMock) {
+      return { all: (...args: any[]) => [] as any[] };
+    }
+    return this.db.prepare(sql);
+  }
+
+  close() {
+    if (!this.isMock && this.db) {
+      this.db.close();
+    }
   }
 
   private mapPermissionRow(row: any): Permission {

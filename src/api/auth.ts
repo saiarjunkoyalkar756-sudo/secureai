@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { PermissionDB } from '../core/permissions/db';
-import * as path from 'path';
+import { config } from '../config';
 
 export interface User {
   id: string;
@@ -11,13 +11,16 @@ export interface User {
 
 export interface AuthRequest extends Request {
   user?: User;
+  requestId?: string;
 }
 
-const dbPath = path.join(__dirname, '../../../../secureai.db');
-const db = new PermissionDB(dbPath);
+// Shared database instance
+const db = new PermissionDB(config.databasePath);
+export { db as authDb };
 
 /**
- * Middleware to authenticate via API Key in Bearer token
+ * Middleware to authenticate via API Key in Bearer token.
+ * API keys are hashed with SHA-256 before lookup.
  */
 export const authenticateApiKey = async (
   req: AuthRequest,

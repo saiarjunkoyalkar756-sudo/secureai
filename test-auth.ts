@@ -1,56 +1,137 @@
 import { PermissionDB } from './src/core/permissions/db';
 import * as path from 'path';
 
-async function testAuthSystem() {
-  const dbPath = path.join(__dirname, 'secureai.db');
+/**
+ * Seeds the database with test users, API keys, and sample permissions.
+ */
+async function seedDatabase() {
+  const dbPath = path.resolve(process.cwd(), process.env.DATABASE_PATH || 'secureai.db');
   const db = new PermissionDB(dbPath);
 
-  console.log('--- Setting up Test Data ---');
-  
-  const testUser = {
-    id: 'user_test_1',
-    email: 'test@secureai.io',
-    organizationId: 'org_acme',
+  console.log('');
+  console.log('🌱 Seeding SecureAI Database...');
+  console.log('');
+
+  // --- Admin User ---
+  const adminUser = {
+    id: 'user_admin_1',
+    email: 'admin@secureai.io',
+    organizationId: 'org_secureai',
     role: 'admin'
   };
 
   try {
-    db.createUser(testUser);
-    console.log('User created:', testUser.email);
+    db.createUser(adminUser);
+    console.log(`  👤 Created admin user: ${adminUser.email}`);
   } catch (e) {
-    console.log('User already exists (skipping)');
+    console.log(`  👤 Admin user already exists: ${adminUser.email}`);
   }
 
-  const apiKeyId = 'key_test_1';
-  const apiKeyValue = 'sk_test_123456789';
-  
+  // --- Executor User ---
+  const executorUser = {
+    id: 'user_executor_1',
+    email: 'developer@secureai.io',
+    organizationId: 'org_secureai',
+    role: 'executor'
+  };
+
   try {
-    db.createApiKey(apiKeyId, testUser.id, apiKeyValue, testUser.organizationId);
-    console.log('API Key created:', apiKeyValue);
+    db.createUser(executorUser);
+    console.log(`  👤 Created executor user: ${executorUser.email}`);
   } catch (e) {
-    console.log('API Key already exists (skipping)');
+    console.log(`  👤 Executor user already exists: ${executorUser.email}`);
   }
 
-  console.log('\n--- Verifying Auth Retrieval ---');
-  const user = db.getUserByApiKey(apiKeyValue);
+  // --- API Keys (stored as hashed) ---
+  const adminKeyRaw = 'sk_test_admin_123456';
+  try {
+    db.createApiKey('key_admin_1', adminUser.id, adminKeyRaw, adminUser.organizationId);
+    console.log(`  🔑 Created admin API key: ${adminKeyRaw}`);
+  } catch (e) {
+    console.log(`  🔑 Admin API key already exists`);
+  }
+
+  const executorKeyRaw = 'sk_test_executor_789';
+  try {
+    db.createApiKey('key_executor_1', executorUser.id, executorKeyRaw, executorUser.organizationId);
+    console.log(`  🔑 Created executor API key: ${executorKeyRaw}`);
+  } catch (e) {
+    console.log(`  🔑 Executor API key already exists`);
+  }
+
+  // --- Sample Permissions ---
+  const samplePermissions = [
+    {
+      id: 'perm_1',
+      type: 'file_read',
+      resource: '/tmp/*',
+      action: 'allow',
+      requiresApproval: false,
+      createdBy: 'system',
+      organizationId: 'org_secureai'
+    },
+    {
+      id: 'perm_2',
+      type: 'network_egress',
+      resource: 'api.github.com',
+      action: 'allow',
+      requiresApproval: true,
+      createdBy: 'system',
+      organizationId: 'org_secureai'
+    },
+    {
+      id: 'perm_3',
+      type: 'file_write',
+      resource: '/tmp/*',
+      action: 'allow',
+      requiresApproval: false,
+      createdBy: 'system',
+      organizationId: 'org_secureai'
+    }
+  ];
+
+  for (const perm of samplePermissions) {
+    try {
+      db.addPermission(perm);
+      console.log(`  📋 Created permission: ${perm.type} → ${perm.resource} (${perm.action})`);
+    } catch (e) {
+      console.log(`  📋 Permission already exists: ${perm.id}`);
+    }
+  }
+
+  // --- Verify ---
+  console.log('');
+  console.log('🔍 Verifying...');
   
-  if (user && user.email === testUser.email) {
-    console.log('✅ Auth retrieval PASSED');
-    console.log('User Role:', user.role);
-    console.log('Key Org ID:', user.keyOrgId);
+  const adminAuth = db.getUserByApiKey(adminKeyRaw);
+  if (adminAuth && adminAuth.email === adminUser.email) {
+    console.log(`  ✅ Admin key auth: PASSED (role: ${adminAuth.role})`);
   } else {
-    console.error('❌ Auth retrieval FAILED');
-    process.exit(1);
+    console.error('  ❌ Admin key auth: FAILED');
   }
 
-  console.log('\n--- Verifying Invalid Key ---');
-  const invalidUser = db.getUserByApiKey('wrong_key');
-  if (!invalidUser) {
-    console.log('✅ Invalid key check PASSED');
+  const executorAuth = db.getUserByApiKey(executorKeyRaw);
+  if (executorAuth && executorAuth.email === executorUser.email) {
+    console.log(`  ✅ Executor key auth: PASSED (role: ${executorAuth.role})`);
   } else {
-    console.error('❌ Invalid key check FAILED');
-    process.exit(1);
+    console.error('  ❌ Executor key auth: FAILED');
   }
+
+  const invalidAuth = db.getUserByApiKey('totally_wrong_key');
+  if (!invalidAuth) {
+    console.log('  ✅ Invalid key rejection: PASSED');
+  } else {
+    console.error('  ❌ Invalid key rejection: FAILED');
+  }
+
+  const stats = db.getStats();
+  console.log('');
+  console.log('📊 Database Stats:', JSON.stringify(stats, null, 2));
+  console.log('');
+  console.log('🎉 Seed complete! Use these keys to authenticate:');
+  console.log(`   Admin:    ${adminKeyRaw}`);
+  console.log(`   Executor: ${executorKeyRaw}`);
+  console.log('');
 }
 
-testAuthSystem().catch(console.error);
+seedDatabase().catch(console.error);

