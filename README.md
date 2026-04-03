@@ -1,6 +1,8 @@
-# 🛡️ SecureAI: Enterprise-Grade AI Code Execution Platform
-
 SecureAI is a high-security sandbox middleware designed to bridge the gap between untrusted LLM-generated code and sensitive enterprise infrastructure. It provides a robust "Safety Layer" that allows AI agents to execute code with granular permissions, human-in-the-loop approvals, and immutable audit trails.
+
+---
+
+### 🌐 [Live Demo: https://secureai-platform.vercel.app](https://secureai-platform.vercel.app)
 
 ---
 
