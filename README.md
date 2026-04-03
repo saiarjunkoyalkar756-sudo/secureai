@@ -2,7 +2,7 @@ SecureAI is a high-security sandbox middleware designed to bridge the gap betwee
 
 ---
 
-### 🌐 [Live Demo: https://secureai-platform.vercel.app](https://secureai-platform.vercel.app)
+### 🌐 [Live App](https://secureai-platform.vercel.app) | 📡 [API Endpoints](https://secureai-production-bf5b.up.railway.app) | 📚 [Docs](API_SPEC.md)
 
 ---
 
