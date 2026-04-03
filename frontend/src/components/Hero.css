@@ -1,0 +1,114 @@
+.hero-section {
+  padding: 120px 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+  position: relative;
+  z-index: 10;
+}
+
+.hero-container {
+  display: flex;
+  align-items: center;
+  gap: 60px;
+}
+
+.hero-content {
+  flex: 1;
+}
+
+.hero-visual {
+  flex: 1;
+  position: relative;
+  perspective: 1000px;
+}
+
+.glow-backdrop {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 120%;
+  height: 120%;
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.15) 0%, rgba(34, 211, 238, 0.05) 50%, transparent 70%);
+  z-index: -1;
+  filter: blur(40px);
+}
+
+.mb-6 { margin-bottom: 24px; }
+.gap-2 { gap: 8px; }
+
+.pulse-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--accent-secondary);
+  border-radius: 50%;
+  box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.7);
+  animation: pulse-dot 2s infinite;
+}
+
+@keyframes pulse-dot {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.7); }
+  70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(34, 211, 238, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 211, 238, 0); }
+}
+
+.hero-title {
+  font-size: 4rem;
+  line-height: 1.1;
+  margin-bottom: 24px;
+}
+
+.hero-subtitle {
+  font-size: 1.25rem;
+  color: var(--text-secondary);
+  margin-bottom: 40px;
+  max-width: 500px;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.hero-proof {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+/* Animations */
+.animate-fade-in { animation: fadeIn 1s ease-out forwards; }
+.animate-fade-in-delayed { animation: fadeIn 1s ease-out 0.6s forwards; opacity: 0; }
+.animate-slide-up { animation: slideUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.animate-slide-up-delayed { animation: slideUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.2s forwards; opacity: 0; }
+.animate-slide-up-delayed-2 { animation: slideUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.4s forwards; opacity: 0; }
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(40px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 968px) {
+  .hero-container {
+    flex-direction: column;
+    text-align: center;
+  }
+  
+  .hero-title {
+    font-size: 3rem;
+  }
+  
+  .hero-subtitle {
+    margin: 0 auto 40px auto;
+  }
+  
+  .hero-actions {
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+}
