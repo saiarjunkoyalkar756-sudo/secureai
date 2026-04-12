@@ -37,6 +37,7 @@ export interface PermissionRequest {
   reason?: string;
   code?: string;
   language?: string;
+  riskScore?: number;
 }
 
 

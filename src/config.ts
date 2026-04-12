@@ -22,6 +22,7 @@ export interface AppConfig {
     maxRequests: number;
   };
   hipaaMode: boolean;
+  allowPublicDemo: boolean;
   version: string;
 }
 
@@ -78,6 +79,7 @@ function loadConfig(): AppConfig {
     sandbox: { memoryLimit, timeout },
     rateLimiting: { windowMs: rateLimitWindow, maxRequests: rateLimitMax },
     hipaaMode,
+    allowPublicDemo: process.env.ALLOW_PUBLIC_DEMO === 'true' || nodeEnv === 'development',
     version: '1.0.0'
   };
 }

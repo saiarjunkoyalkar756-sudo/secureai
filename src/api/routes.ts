@@ -20,6 +20,14 @@ const emailService = new EmailService();
 const auditLogger = new AuditLogger(config.databasePath.replace('.db', '-audit.db'), config.auditSigningKey);
 const rateLimiter = new RateLimiter(config.rateLimiting.windowMs, config.rateLimiting.maxRequests);
 
+// Tighter limits for expensive / sensitive endpoints
+rateLimiter
+  .addRouteLimit('/v1/execute',      { windowMs: 60_000, maxRequests: 20  })  // 20 executions/min
+  .addRouteLimit('/v1/analyze',      { windowMs: 60_000, maxRequests: 30  })  // 30 analyses/min
+  .addRouteLimit('/v1/auth/login',   { windowMs: 60_000, maxRequests: 10  })  // 10 login attempts/min
+  .addRouteLimit('/v1/keys',         { windowMs: 60_000, maxRequests: 30  })  // 30 key ops/min
+  .addRouteLimit('/v1/audit-logs',   { windowMs: 60_000, maxRequests: 60  }); // 60 log reads/min
+
 // --- UTILS ---
 const generateId = () => crypto.randomUUID().substring(0, 12);
 
@@ -98,7 +106,8 @@ app.post('/v1/execute', authenticateApiKey, async (req: AuthRequest, res: Respon
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
         createdAt: new Date(),
         code,
-        language
+        language,
+        riskScore: permissionCheck.analysis.riskScore, // store real score
       };
 
       db.createApprovalRequest(approvalReq);
@@ -363,4 +372,267 @@ app.post('/v1/analyze', authenticateApiKey, async (req: AuthRequest, res: Respon
   }
 });
 
+// ============================================================================
+// DASHBOARD API ENDPOINTS
+// ============================================================================
+
+/**
+ * POST /v1/auth/login
+ * Validate an API key and return the user info for the frontend dashboard.
+ */
+app.post('/v1/auth/login', (req: AuthRequest, res: Response) => {
+  try {
+    const { apiKey } = req.body;
+    if (!apiKey) {
+      return res.status(400).json({ error: 'Missing apiKey field' });
+    }
+
+    const user = db.getUserByApiKey(apiKey);
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid or revoked API key' });
+    }
+
+    // Log the login event
+    auditLogger.log({
+      timestamp: new Date(),
+      executionId: 'login_' + generateId(),
+      userId: user.id,
+      action: 'dashboard_login',
+      resourcesBefore: {},
+      resourcesAfter: { email: user.email, role: user.role },
+      metadata: { ip: req.ip || 'unknown' }
+    });
+
+    res.json({
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        organizationId: user.organizationId || user.keyOrgId,
+      }
+    });
+  } catch (err) {
+    console.error('[Server] ❌ Login error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /v1/approvals
+ * List all approval requests (pending by default).
+ */
+app.get('/v1/approvals', authenticateApiKey, requireRole(['admin', 'approver']), (req: AuthRequest, res: Response) => {
+  try {
+    const status = (req.query.status as string) || undefined;
+    const approvals = db.listApprovalRequests(status);
+
+    // Transform to frontend-friendly format
+    const data = approvals.map((a: any) => ({
+      id: a.id,
+      codeHash: 'sha256:' + (a.executionId || a.id).substring(0, 8) + '...',
+      language: a.language || 'node20',
+      submittedBy: a.requestedBy || 'unknown',
+      riskScore: a.riskScore ?? 50,  // use real stored score
+      submittedAt: a.createdAt,
+      snippet: a.code ? a.code.substring(0, 80) : '(no preview)',
+      status: a.status,
+    }));
+
+    res.json({ data, count: data.length });
+  } catch (err) {
+    console.error('[Server] ❌ List approvals error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * POST /v1/approvals/:id/deny
+ * Alias for /reject — used by the frontend dashboard.
+ */
+app.post('/v1/approvals/:id/deny', authenticateApiKey, requireRole(['admin', 'approver']), async (req: AuthRequest, res: Response) => {
+  try {
+    const approval = db.getApprovalRequest(req.params.id);
+    if (!approval) return res.status(404).json({ error: 'Not found' });
+
+    if (approval.status !== 'pending') {
+      return res.status(400).json({ error: `Request is already ${approval.status}` });
+    }
+
+    const reason = req.body.reason || 'Denied via dashboard';
+    db.updateApprovalStatus(req.params.id, 'rejected', req.user!.id, reason);
+    await auditLogger.logRejection(req.params.id, approval.executionId, req.user!.id, reason);
+
+    res.json({ status: 'denied', message: 'Execution request denied', reason });
+  } catch (err) {
+    console.error('[Server] ❌ Deny error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /v1/keys
+ * List API keys for the authenticated user's organization.
+ */
+app.get('/v1/keys', authenticateApiKey, (req: AuthRequest, res: Response) => {
+  try {
+    const keys = db.getApiKeysByOrg(req.user!.organizationId);
+    const data = keys.map((k: any) => ({
+      id: k.id,
+      name: k.name || k.id,
+      prefix: k.keyPrefix,
+      createdAt: k.createdAt,
+      lastUsed: null,
+      status: k.status,
+      expiresAt: null,
+    }));
+
+    res.json({ data, count: data.length });
+  } catch (err) {
+    console.error('[Server] ❌ List keys error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * POST /v1/keys
+ * Create a new API key for the authenticated user.
+ */
+app.post('/v1/keys', authenticateApiKey, requireRole(['admin']), async (req: AuthRequest, res: Response) => {
+  try {
+    const { name, expiresAt } = req.body;
+    if (!name) return res.status(400).json({ error: 'Missing "name" field' });
+
+    const keyId = 'key_' + generateId();
+    const rawKey = 'sk_live_' + crypto.randomUUID().replace(/-/g, '').slice(0, 24);
+
+    // createApiKey is now async (bcrypt hashing)
+    await db.createApiKey(keyId, req.user!.id, rawKey, req.user!.organizationId, { name, expiresAt });
+
+    auditLogger.log({
+      timestamp: new Date(),
+      executionId: keyId,
+      userId: req.user!.id,
+      action: 'api_key_created',
+      resourcesBefore: {},
+      resourcesAfter: { keyPrefix: rawKey.substring(0, 12) },
+      metadata: { name, expiresAt: expiresAt || null }
+    });
+
+    res.json({
+      data: {
+        id: keyId,
+        name,
+        prefix: rawKey.substring(0, 12),
+        secret: rawKey,           // shown ONCE — never stored in plaintext
+        createdAt: new Date().toISOString(),
+        lastUsed: null,
+        status: 'active' as const,
+        expiresAt: expiresAt || null,
+      }
+    });
+  } catch (err) {
+    console.error('[Server] ❌ Create key error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * POST /v1/keys/:id/revoke
+ * Revoke an API key.
+ */
+app.post('/v1/keys/:id/revoke', authenticateApiKey, requireRole(['admin']), (req: AuthRequest, res: Response) => {
+  try {
+    db.revokeApiKey(req.params.id);
+
+    auditLogger.log({
+      timestamp: new Date(),
+      executionId: req.params.id,
+      userId: req.user!.id,
+      action: 'api_key_revoked',
+      resourcesBefore: { status: 'active' },
+      resourcesAfter: { status: 'revoked' },
+      metadata: {}
+    });
+
+    res.json({ status: 'revoked', message: 'API key revoked successfully' });
+  } catch (err) {
+    console.error('[Server] ❌ Revoke key error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /v1/org/stats
+ * Get organization overview statistics for the dashboard.
+ */
+app.get('/v1/org/stats', authenticateApiKey, (req: AuthRequest, res: Response) => {
+  try {
+    const dbStats = db.getStats();
+    const auditCount = auditLogger.getEntryCount();
+    const allEntries = auditLogger.getRecentEntries(1000); // scan for aggregates
+    const executions = allEntries.filter((e: any) => e.action?.includes('execution') || e.action?.includes('sandboxed')).length;
+    const blocked    = allEntries.filter((e: any) => e.action?.includes('blocked') || e.action?.includes('threat')).length;
+    const keys = db.getApiKeysByOrg(req.user!.organizationId);
+    const activeKeys = keys.filter((k: any) => k.status === 'active').length;
+    const pendingApprovals = db.listApprovalRequests('pending');
+
+    res.json({
+      data: {
+        totalExecutions: executions || dbStats.approvalRequests || 0,
+        blockedThreats: blocked,
+        activeApiKeys: activeKeys || dbStats.apiKeys,
+        auditEvents: auditCount,
+        executionQuota: 20000,
+        executionUsed: executions || dbStats.approvalRequests || 0,
+        executionDelta: 0,
+        blockedDelta: 0,
+        pendingApprovals: pendingApprovals.length,
+      }
+    });
+  } catch (err) {
+    console.error('[Server] ❌ Org stats error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /v1/audit-logs
+ * Alias for /v1/audit/recent — used by the frontend dashboard.
+ */
+app.get('/v1/audit-logs', authenticateApiKey, requireRole(['admin']), (req: AuthRequest, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const entries = auditLogger.getRecentEntries(Math.min(limit, 100));
+
+    // Transform audit entries to frontend-friendly format
+    const data = entries.map((e: any) => {
+      const action = e.action || '';
+      let eventType = 'EXECUTION';
+      if (action.includes('blocked') || action.includes('threat')) eventType = 'BLOCKED';
+      else if (action.includes('key_created')) eventType = 'KEY_CREATED';
+      else if (action.includes('key_revoked')) eventType = 'KEY_REVOKED';
+      else if (action.includes('login')) eventType = 'LOGIN';
+      else if (action.includes('rejected') || action.includes('denied')) eventType = 'DENIED';
+
+      const metadata = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : (e.metadata || {});
+
+      return {
+        id: e.id,
+        timestamp: typeof e.timestamp === 'string' ? e.timestamp : e.timestamp?.toISOString?.() || new Date().toISOString(),
+        eventType,
+        actor: e.userId || 'system',
+        resource: e.executionId || 'unknown',
+        ip: metadata.ip || '0.0.0.0',
+        orgId: req.user!.organizationId,
+      };
+    });
+
+    res.json({ data, count: data.length });
+  } catch (err) {
+    console.error('[Server] ❌ Audit logs error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 export default app;
+

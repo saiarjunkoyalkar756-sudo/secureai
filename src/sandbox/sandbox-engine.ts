@@ -97,7 +97,7 @@ export class SandboxEngine {
       case 'python3.11':
         return {
           filename: 'code.py',
-          command: process.platform === 'win32' ? 'python' : 'python3',
+          command: process.platform === 'win32' ? 'py' : 'python3',
           args: [path.join(sandboxDir, 'code.py')]
         };
       case 'node20':

@@ -30,6 +30,17 @@ export const authenticateApiKey = async (
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (config.allowPublicDemo) {
+      // Allow guest access for the public demo
+      req.user = {
+        id: 'user_guest',
+        email: 'guest@secureai.io',
+        organizationId: 'org_public_demo',
+        role: 'executor'
+      };
+      return next();
+    }
+
     return res.status(401).json({ 
       error: 'Missing or invalid Authorization header',
       details: 'Please provide a valid Bearer token'
