@@ -6,14 +6,14 @@ SecureAI is a high-security sandbox middleware designed to bridge the gap betwee
 
 ---
 
-## 🎯 Current Status: v0.1.0-beta
+## 🎯 Current Status: v1.0.0-beta
 ✅ **Core Features Fully Implemented:**
-- **Sandbox Engine:** Multi-layered isolation using Docker with resource limits.
-- **Permission Engine:** Real-time static code analysis (Regex-based) for Python, JS, and Bash.
-- **Persistent Database:** SQLite-backed storage for permissions, requests, and identities.
-- **Audit Logger:** Cryptographically signed hash chain for tamper-proof forensics.
+- **Sandbox Engine:** Multi-layered isolation using hard-limited Dockerized containers.
+- **Permission Engine:** **Structural AST Analysis** (Deterministic parsing) for Python and Node.js.
+- **Persistent Database:** **Vercel/Neon PostgreSQL** backend for production-grade reliability across cold starts.
+- **Audit Logger:** Cryptographically signed hash chain stored in Postgres for tamper-proof forensics.
 - **RBAC Authentication:** API Key + Bearer token authentication with Role-Based Access Control.
-- **Email Service:** SendGrid-ready notification system for approval workflows.
+- **Waitlist & Lead Capture:** Fully integrated GTM funnel with Postgres persistence and confirmation emails.
 - **TypeScript SDK:** Ready-to-use client library for seamless integration.
 
 ---
@@ -98,12 +98,12 @@ console.log(data);
 
 ## 🗺️ Roadmap
 - [x] Core Architecture & MVP Prototype
-- [x] Immutable Audit Logging
-- [x] Persistent DB & RBAC Authentication
-- [x] Real Static Code Analysis
-- [ ] Production eBPF Isolation
+- [x] Immutable Audit Logging (Signed Hash Chain)
+- [x] Production PostgreSQL & RBAC Authentication
+- [x] Deterministic Structural AST Scanning (Vulnerability resistant)
+- [x] Integrated GTM Funnel & Waitlist Dashboard
 - [ ] Slack & Microsoft Teams Approval Integration
-- [ ] Managed SaaS Dashboard
+- [ ] Production eBPF Isolation
 - [ ] SOC2 / HIPAA Compliance Certification
 
 ## ⚖️ License
