@@ -13,9 +13,11 @@
     "seed": "node node_modules/typescript/bin/tsc && node dist/test-auth.js",
     "test": "jest --forceExit --detectOpenHandles",
     "test:coverage": "jest --coverage --forceExit --detectOpenHandles",
-    "lint": "npx tsc --noEmit"
+    "lint": "npx tsc --noEmit",
+    "mcp": "ts-node src/cli/mcp.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/acorn": "^4.0.6",
     "acorn": "^8.16.0",
     "bcryptjs": "^3.0.3",

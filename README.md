@@ -81,6 +81,28 @@ npm test
 
 ---
 
+## 🔌 Connecting an AI Agent via MCP
+
+SecureAI includes a native **Model Context Protocol (MCP) Server**. This allows MCP-compatible agents (like Claude Code, Cursor, or your custom agents) to securely sandbox generated code without any custom API integration.
+
+Add this entry to your agent's `mcp.json` or `claude.json` configuration file:
+
+```json
+{
+  "mcpServers": {
+    "secureai": {
+      "command": "npx",
+      "args": ["ts-node", "src/cli/mcp.ts"],
+      "env": {
+        "SECUREAI_API_KEY": "YOUR_API_KEY"
+      }
+    }
+  }
+}
+```
+
+---
+
 ## 📡 API Usage Example
 
 Integrate SecureAI into your AI agent's workflow using a simple REST request:
