@@ -31,6 +31,23 @@ export class PermissionDB {
       console.warn(`[Database] ⚠ Failed to load better-sqlite3. Falling back to IN-MEMORY MOCK MODE.`);
       console.warn(`[Database] Note: Data will NOT persist after server restart.`);
       this.isMock = true;
+
+      // Auto-seed for Vercel Serverless (which runs in mock mode due to better-sqlite3 native binary mismatch)
+      const adminId = 'user_admin_static';
+      const orgId = 'org_5977a082-1e0';
+      const keyId = 'key_static_01';
+      const keyPrefix = 'sk_live_3569';
+      const keyHash = '8b843e028e54d214292a197f1d436ff1e84a341977e9d9c0f26fa950a864e947';
+      const keySecret = '$2b$10$RjzXmUCkpmmq94D.nhlBM.YPzWWLRSdOUOhtv1r4RD2C9wAFggJgq';
+
+      this.mockStore.users.set(adminId, {
+        id: adminId, email: 'admin@secureai.io', organizationId: orgId, role: 'admin'
+      });
+      this.mockStore.api_keys.set(keyId, {
+        id: keyId, keyHash, keySecret, keyPrefix, name: 'Vercel Permanent Admin Key',
+        userId: adminId, organizationId: orgId, status: 'active'
+      });
+      console.log('[Database] ✅ Auto-seeded In-Memory Mock Admin API Key');
     }
   }
 
@@ -164,6 +181,27 @@ export class PermissionDB {
       } catch (_) { /* table may not exist yet */ }
     } catch (_) {
       // Table might not exist yet — that's fine, schema was just created
+    }
+
+    // Auto-seed for Vercel/Serverless stateless environments 
+    // Always insert the default admin user and key if none exists
+    const keyCount = this.db.prepare('SELECT COUNT(*) as count FROM api_keys').get() as { count: number };
+    if (keyCount.count === 0) {
+      console.log('[Database] ⚠️ Empty database detected. Auto-seeding static Vercel Admin...');
+      const adminId = 'user_admin_static';
+      const orgId = 'org_5977a082-1e0';
+      const keyId = 'key_static_01';
+      const keyPrefix = 'sk_live_3569';
+      const keyHash = '8b843e028e54d214292a197f1d436ff1e84a341977e9d9c0f26fa950a864e947';
+      const keySecret = '$2b$10$RjzXmUCkpmmq94D.nhlBM.YPzWWLRSdOUOhtv1r4RD2C9wAFggJgq';
+      
+      this.db.prepare('INSERT OR IGNORE INTO users (id, email, organizationId, role) VALUES (?, ?, ?, ?)').run(
+        adminId, 'admin@secureai.io', orgId, 'admin'
+      );
+      this.db.prepare('INSERT OR IGNORE INTO api_keys (id, keyHash, keySecret, keyPrefix, name, userId, organizationId) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+        keyId, keyHash, keySecret, keyPrefix, 'Vercel Permanent Admin Key', adminId, orgId
+      );
+      console.log('[Database] ✅ Auto-seeded Vercel Admin API Key');
     }
   }
 
