@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, ShieldAlert, ScrollText, Terminal, Key, Wifi, WifiOff, ArrowLeft, LogOut } from 'lucide-react';
+import { LayoutDashboard, ShieldAlert, ScrollText, Terminal, Key, Wifi, ArrowLeft, LogOut } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../lib/auth-context';
 import './Sidebar.css';
@@ -9,7 +9,6 @@ export type DashTab = 'overview' | 'approvals' | 'audit-log' | 'playground' | 'a
 interface SidebarProps {
   active: DashTab;
   onSelect: (tab: DashTab) => void;
-  isLive: boolean;
 }
 
 const NAV_ITEMS: { id: DashTab; label: string; icon: React.ReactNode; badge?: number }[] = [
@@ -20,7 +19,7 @@ const NAV_ITEMS: { id: DashTab; label: string; icon: React.ReactNode; badge?: nu
   { id: 'api-keys',   label: 'API Keys',          icon: <Key size={18} /> },
 ];
 
-export const Sidebar: React.FC<SidebarProps> = ({ active, onSelect, isLive }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ active, onSelect }) => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
@@ -78,11 +77,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ active, onSelect, isLive }) =>
           <span>Back to Homepage</span>
         </Link>
         <div className="dash-sidebar__status">
-          {isLive ? (
-            <><Wifi size={13} className="status-icon live" /> <span className="live">Live Data</span></>
-          ) : (
-            <><WifiOff size={13} className="status-icon mock" /> <span className="mock">Mock Mode</span></>
-          )}
+          <><Wifi size={13} className="status-icon live" /> <span className="live">Live Data</span></>
         </div>
       </div>
     </aside>

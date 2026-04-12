@@ -22,7 +22,6 @@ function formatTs(iso: string) {
 export const AuditLog: React.FC = () => {
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [filter, setFilter] = useState<FilterType>('all');
-  const [isLive, setIsLive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -35,7 +34,6 @@ export const AuditLog: React.FC = () => {
     getAuditLogs().then(res => {
       if (cancelled) return;
       setEvents(res.data);
-      setIsLive(res.live);
       setLoading(false);
     });
     return () => { cancelled = true; };
@@ -54,8 +52,6 @@ export const AuditLog: React.FC = () => {
       <div className="panel-header-row">
         <h2 className="panel-title">
           Audit Log
-          <span className={`live-dot ${isLive ? 'pulsing' : ''}`} />
-          {isLive ? 'Live' : 'Mock'}
         </h2>
         <button id="audit-refresh-btn" className="refresh-btn" onClick={refresh}>
           <RefreshCw size={14} /> Refresh

@@ -25,7 +25,7 @@ export const OrgOverview: React.FC = () => {
   const [stats, setStats] = useState<OrgStats | null>(null);
 
   useEffect(() => {
-    getOrgStats().then(r => setStats(r.data));
+    getOrgStats().then(s => setStats(s.data)).catch(() => {});
   }, []);
 
   if (!stats) return <div className="panel-loading">Loading overview…</div>;

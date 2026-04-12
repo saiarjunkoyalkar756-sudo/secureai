@@ -23,7 +23,7 @@ export const PendingApprovals: React.FC = () => {
   const [acting, setActing] = useState<string | null>(null);
 
   useEffect(() => {
-    getApprovals().then(r => { setItems(r.data); setLoading(false); });
+    getApprovals().then(res => { setItems(res.data); setLoading(false); }).catch(() => setLoading(false));
   }, []);
 
   const handle = async (id: string, action: 'approve' | 'deny') => {
