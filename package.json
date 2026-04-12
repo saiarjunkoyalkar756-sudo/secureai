@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "SecureAI — Enterprise-Grade AI Code Execution Platform",
   "main": "dist/src/index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "build": "npx tsc",
     "start": "node dist/src/index.js",
