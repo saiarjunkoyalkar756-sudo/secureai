@@ -10,7 +10,7 @@ const server = app.listen(config.port, '0.0.0.0', () => {
   console.log('  ╔═══════════════════════════════════════════════╗');
   console.log('  ║     🛡️  SecureAI Platform API v' + config.version + '          ║');
   console.log('  ╠═══════════════════════════════════════════════╣');
-  console.log(`  ║  🌐 Server:     http://localhost:${config.port}          ║`);
+  console.log(`  ║  🌐 Server:     http://0.0.0.0:${config.port}          ║`);
   console.log(`  ║  🏗️  Environment: ${config.nodeEnv.padEnd(25)}  ║`);
   console.log(`  ║  💾 Database:    ${(config.postgresUrl ? 'PostgreSQL' : 'In-Memory Mock').padEnd(25)}  ║`);
   console.log(`  ║  🏥 HIPAA Mode:  ${(config.hipaaMode ? 'ENABLED' : 'disabled').padEnd(25)}  ║`);
