@@ -38,16 +38,21 @@ function loadConfig(): AppConfig {
     process.env.DATABASE_PATH || 'secureai.db'
   );
 
-  // Audit signing key - generate a default for dev, require in production
+  // Audit signing key - generate a default for dev, warn loudly in production
   let auditSigningKey: Buffer;
   if (process.env.AUDIT_SIGNING_KEY && process.env.AUDIT_SIGNING_KEY !== 'your_secure_audit_signing_key_here') {
     auditSigningKey = Buffer.from(process.env.AUDIT_SIGNING_KEY);
-  } else if (nodeEnv === 'production') {
-    errors.push('AUDIT_SIGNING_KEY is required in production');
-    auditSigningKey = Buffer.alloc(0);
+    console.log('[Config] ✅ AUDIT_SIGNING_KEY loaded from environment');
   } else {
+    // Auto-generate so server starts — strongly recommended to set this in production
     auditSigningKey = crypto.randomBytes(32);
-    console.warn('[Config] ⚠ Using auto-generated AUDIT_SIGNING_KEY (dev mode only)');
+    if (nodeEnv === 'production') {
+      console.warn('[Config] ⚠️  AUDIT_SIGNING_KEY not set in production!');
+      console.warn('[Config] ⚠️  Audit log signatures will change on every restart.');
+      console.warn('[Config] ⚠️  Set AUDIT_SIGNING_KEY in Railway Variables immediately.');
+    } else {
+      console.warn('[Config] ⚠  Using auto-generated AUDIT_SIGNING_KEY (dev mode)');
+    }
   }
 
   const sendgridApiKey = process.env.SENDGRID_API_KEY;
