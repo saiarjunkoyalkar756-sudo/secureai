@@ -210,6 +210,17 @@ export class SandboxEngine {
    * Tier 2: Process-based isolation (cross-platform).
    * Uses child_process.spawn with timeout enforcement and restricted environment.
    */
+  private getSandboxUser(): { uid?: number; gid?: number } {
+    if (process.platform !== 'linux') return {};
+    try {
+      const uid = parseInt(require('child_process').execSync('id -u sandbox', { encoding: 'utf-8' }).trim(), 10);
+      const gid = parseInt(require('child_process').execSync('id -g sandbox', { encoding: 'utf-8' }).trim(), 10);
+      return { uid, gid };
+    } catch {
+      return {};
+    }
+  }
+
   private runProcess(command: string, args: string[], sandboxDir: string, cfg: SandboxConfig): Promise<ExecutionResult> {
     return new Promise((resolve, reject) => {
       // Restricted environment — only essential variables
@@ -227,11 +238,14 @@ export class SandboxEngine {
         safeEnv.COMSPEC = process.env.COMSPEC || '';
       }
 
+      const { uid, gid } = this.getSandboxUser();
+
       const proc = spawn(command, args, {
         cwd: sandboxDir,
         env: safeEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: cfg.timeout * 1000,
+        uid,
+        gid,
         windowsHide: true
       });
 
@@ -241,7 +255,10 @@ export class SandboxEngine {
 
       const timer = setTimeout(() => {
         killed = true;
-        proc.kill('SIGKILL');
+        proc.kill('SIGTERM'); // Grace period request
+        setTimeout(() => {
+          try { proc.kill('SIGKILL'); } catch (e) {} // Hard kill zombie
+        }, 1000);
       }, cfg.timeout * 1000);
 
       // Close stdin immediately
