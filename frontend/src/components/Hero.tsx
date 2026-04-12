@@ -41,7 +41,7 @@ export const Hero: React.FC<HeroProps> = ({ onCtaClick }) => {
           </div>
           
           <div className="hero-proof animate-fade-in-delayed">
-            Trusted by AI teams scaling to millions of executions.
+            Built for teams who can't afford to trust blindly.
           </div>
         </div>
         

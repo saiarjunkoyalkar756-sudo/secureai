@@ -1,8 +1,14 @@
+# SecureAI
+
+> Every time an AI agent writes code, someone has to trust it. SecureAI makes that trust verifiable.
+
 SecureAI is a high-security sandbox middleware designed to bridge the gap between untrusted LLM-generated code and sensitive enterprise infrastructure. It provides a robust "Safety Layer" that allows AI agents to execute code with granular permissions, human-in-the-loop approvals, and immutable audit trails.
 
 ---
 
 ### 🌐 [Live App](https://secureai-platform.vercel.app) | 📡 [API Endpoints](https://secureai-production-bf5b.up.railway.app) | 📚 [Docs](API_SPEC.md)
+
+![SecureAI Dashboard Preview](dashboard_preview.png)
 
 ---
 
@@ -86,7 +92,7 @@ const response = await fetch(API_URL, {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
-    "Authorization": "Bearer sk_test_admin_123456" 
+    "Authorization": "Bearer YOUR_API_KEY" 
   },
   body: JSON.stringify({
     language: "python",
@@ -109,6 +115,9 @@ console.log(data);
 - [ ] Slack & Microsoft Teams Approval Integration
 - [ ] Production eBPF Isolation
 - [ ] SOC2 / HIPAA Compliance Certification
+
+## 🤝 Contributing
+Want to contribute? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## ⚖️ License
 MIT License. See [LICENSE](LICENSE) for details.
