@@ -1,0 +1,4 @@
+{
+  "code": "console.log('SecureAI Live Test: Success');",
+  "language": "node20"
+}

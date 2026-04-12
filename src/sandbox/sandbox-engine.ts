@@ -74,15 +74,7 @@ export class SandboxEngine {
       }
 
       // Tier 3: Mock fallback (for environments without any runtime)
-      return {
-        status: 'success',
-        exitCode: 0,
-        stdout: `[SANDBOX:MOCK] No runtime available for ${sandboxConfig.language}. Code received (${code.length} chars).`,
-        stderr: '',
-        executionTime: (Date.now() - startTime) / 1000,
-        resourcesUsed: { cpu: 0, memory: 0, disk: code.length },
-        sandboxType: 'mock'
-      };
+      throw new Error(`No sandbox runtime available for ${sandboxConfig.language}. Both Docker and process isolation failed.`);
 
     } finally {
       await fs.rm(sandboxDir, { recursive: true, force: true }).catch(() => {});
