@@ -383,15 +383,15 @@ export class PermissionDB {
     const row = this.db.prepare(
       `SELECT u.*, k.organizationId as keyOrgId, k.keySecret, k.id as keyId
        FROM users u JOIN api_keys k ON u.id = k.userId
-       WHERE k.keyHash = ? AND k.status = 'active'
-         AND (k.expiresAt IS NULL OR k.expiresAt > ?)`
-    ).get(keyHash, now) as any;
+       WHERE k.keyHash = ? AND k.status = 'active'`
+    ).get(keyHash) as any;
 
     if (!row) return null;
 
-    // Step 2: bcrypt verification (if keySecret exists on this key)
-    // Note: synchronous bcrypt compare is acceptable here — it's intentionally slow
-    // and the rate limiter already caps requests per key.
+    // Expiry check
+    if (row.expiresAt && row.expiresAt < now) return null;
+
+    // Step 2: bcrypt verification (sync — kept for backward compat in tests)
     if (row.keySecret) {
       const valid = bcrypt.compareSync(rawKey, row.keySecret);
       if (!valid) return null;
@@ -404,6 +404,60 @@ export class PermissionDB {
 
     return row;
   }
+
+  /**
+   * Async version used by authenticateApiKey middleware.
+   *
+   * Returns:
+   *   - user row    → valid, active key
+   *   - 'expired'   → key exists and was valid, but expiresAt has passed
+   *   - null        → key not found, revoked, or bcrypt mismatch
+   *
+   * Uses await bcrypt.compare() to avoid blocking the event loop for ~100ms
+   * during the bcrypt verification step.
+   */
+  async getUserByApiKeyAsync(rawKey: string): Promise<any | 'expired' | null> {
+    const keyHash = PermissionDB.hashApiKey(rawKey);
+    const now = new Date().toISOString();
+
+    if (this.isMock) {
+      const apiKey = Array.from(this.mockStore.api_keys.values()).find(
+        (k: any) => k.keyHash === keyHash && k.status === 'active'
+      ) as any;
+      if (!apiKey) return null;
+      if (apiKey.expiresAt && apiKey.expiresAt < now) return 'expired';
+      apiKey.lastUsedAt = now;
+      const user = this.mockStore.users.get(apiKey.userId);
+      return user ? { ...user, keyOrgId: apiKey.organizationId } : null;
+    }
+
+    // Step 1: SHA-256 fast index lookup — includes revoked check, excludes expiry
+    // so we can return 'expired' instead of null for expired-but-valid keys.
+    const row = this.db.prepare(
+      `SELECT u.*, k.organizationId as keyOrgId, k.keySecret, k.id as keyId, k.expiresAt as keyExpiresAt
+       FROM users u JOIN api_keys k ON u.id = k.userId
+       WHERE k.keyHash = ? AND k.status = 'active'`
+    ).get(keyHash) as any;
+
+    if (!row) return null;
+
+    // Step 2: expiry check — return distinct sentinel for expired keys
+    if (row.keyExpiresAt && row.keyExpiresAt < now) return 'expired';
+
+    // Step 3: async bcrypt.compare — non-blocking, ~100ms
+    if (row.keySecret) {
+      const valid = await bcrypt.compare(rawKey, row.keySecret);
+      if (!valid) return null;
+    }
+
+    // Step 4: update lastUsedAt (fire-and-forget)
+    try {
+      this.db.prepare('UPDATE api_keys SET lastUsedAt = ? WHERE id = ?').run(now, row.keyId);
+    } catch { /* ignore */ }
+
+    return row;
+  }
+
 
   createUser(user: any) {
     if (this.isMock) { this.mockStore.users.set(user.id, { ...user }); return; }

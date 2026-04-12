@@ -20,18 +20,25 @@ export { db as authDb };
 
 /**
  * Middleware to authenticate via API Key in Bearer token.
- * API keys are hashed with SHA-256 before lookup.
+ *
+ * Flow:
+ *   1. Extract Bearer token from Authorization header.
+ *   2. SHA-256 hash for fast DB index lookup (avoids full-table scan).
+ *   3. bcrypt.compare() for brute-force-resistant verification (async — non-blocking).
+ *   4. Check key status (active) and expiry (expiresAt).
+ *   5. Populate req.user for downstream middleware (rate limiter, handlers).
+ *
+ * Errors always include WWW-Authenticate per RFC 6750 §3.1.
  */
 export const authenticateApiKey = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction
-) => {
+): Promise<void> => {
   const authHeader = req.headers.authorization;
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (!authHeader?.startsWith('Bearer ')) {
     if (config.allowPublicDemo) {
-      // Allow guest access for the public demo
       req.user = {
         id: 'user_guest',
         email: 'guest@secureai.io',
@@ -41,30 +48,49 @@ export const authenticateApiKey = async (
       return next();
     }
 
-    return res.status(401).json({ 
-      error: 'Missing or invalid Authorization header',
-      details: 'Please provide a valid Bearer token'
+    res.set('WWW-Authenticate', 'Bearer realm="SecureAI", error="missing_token"');
+    res.status(401).json({
+      error: 'Unauthorized',
+      code:  'MISSING_TOKEN',
+      details: 'Provide a valid Bearer token in the Authorization header'
     });
+    return;
   }
 
-  const apiKey = authHeader.split(' ')[1];
-  
-  try {
-    const user = db.getUserByApiKey(apiKey);
+  const rawKey = authHeader.split(' ')[1];
 
-    if (!user) {
-      return res.status(401).json({ 
-        error: 'Invalid or revoked API key',
-        details: 'The provided API key does not exist or has been deactivated'
+  try {
+    // getUserByApiKey returns null for revoked/non-existent keys,
+    // and throws an ExpiredKeyError for valid-but-expired keys.
+    const result = await db.getUserByApiKeyAsync(rawKey);
+
+    if (result === 'expired') {
+      res.set('WWW-Authenticate', 'Bearer realm="SecureAI", error="invalid_token", error_description="API key has expired"');
+      res.status(401).json({
+        error: 'Unauthorized',
+        code:  'KEY_EXPIRED',
+        details: 'This API key has expired. Please create a new key from the dashboard.'
       });
+      return;
     }
 
-    // Attach user to request
+    if (!result) {
+      res.set('WWW-Authenticate', 'Bearer realm="SecureAI", error="invalid_token", error_description="API key is invalid or revoked"');
+      res.status(401).json({
+        error: 'Unauthorized',
+        code:  'INVALID_KEY',
+        details: 'The provided API key does not exist or has been revoked.'
+      });
+      return;
+    }
+
+    // Populate req.user — organizationId falls back to userId so the rate
+    // limiter never collapses everyone without an org into a single bucket.
     req.user = {
-      id: user.id,
-      email: user.email,
-      organizationId: user.organizationId,
-      role: user.role
+      id:             result.id,
+      email:          result.email,
+      organizationId: result.organizationId ?? result.keyOrgId ?? result.id,
+      role:           result.role
     };
 
     next();
