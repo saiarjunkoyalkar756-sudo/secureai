@@ -20,6 +20,8 @@ SecureAI is a high-security sandbox middleware designed to bridge the gap betwee
 
 ## 🏗️ Core Architecture
 
+![SecureAI Architecture Map](secureai_architecture_map.svg)
+
 ### 1. Permission Engine (Policy Enforcement)
 Analyzes code before execution to identify required capabilities.
 - **Static Analysis:** Detects file access, network egress, subprocesses, and env vars.
@@ -27,8 +29,10 @@ Analyzes code before execution to identify required capabilities.
 - **HITL Approvals:** Triggers human-in-the-loop flows for sensitive requests.
 
 ### 2. Sandbox Engine (Process Isolation)
-Executes code in a multi-layered isolated environment.
-- **Containerization:** Runs code inside hardened Docker containers.
+Executes code in a resilient 3-tier isolated environment.
+- **Tier 1 (Docker):** Runs code inside hardened Docker containers.
+- **Tier 2 (Process Isolation):** Uses secure cross-platform `child_process` execution if Docker is unavailable.
+- **Tier 3 (Strict Fallback):** Explicitly blocks execution and throws if no secure runtime exists (no unlogged "mock" fallbacks).
 - **Resource Limits:** Strict CPU/RAM caps to prevent resource exhaustion attacks.
 
 ### 3. Audit Logger (Immutable Forensics)
