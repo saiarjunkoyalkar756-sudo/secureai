@@ -20,13 +20,18 @@ const emailService = new EmailService();
 const auditLogger = new AuditLogger(config.databasePath.replace('.db', '-audit.db'), config.auditSigningKey);
 const rateLimiter = new RateLimiter(config.rateLimiting.windowMs, config.rateLimiting.maxRequests);
 
-// Tighter limits for expensive / sensitive endpoints
+// Fine-grained per-route limits (applied per org once auth runs)
 rateLimiter
-  .addRouteLimit('/v1/execute',      { windowMs: 60_000, maxRequests: 20  })  // 20 executions/min
-  .addRouteLimit('/v1/analyze',      { windowMs: 60_000, maxRequests: 30  })  // 30 analyses/min
-  .addRouteLimit('/v1/auth/login',   { windowMs: 60_000, maxRequests: 10  })  // 10 login attempts/min
-  .addRouteLimit('/v1/keys',         { windowMs: 60_000, maxRequests: 30  })  // 30 key ops/min
-  .addRouteLimit('/v1/audit-logs',   { windowMs: 60_000, maxRequests: 60  }); // 60 log reads/min
+  .addRouteLimit('/v1/execute',              { windowMs: 60_000, maxRequests: 20  })  // 20 executions / min / org
+  .addRouteLimit('/v1/analyze',              { windowMs: 60_000, maxRequests: 30  })  // 30 analyses / min / org
+  .addRouteLimit('/v1/auth/login',           { windowMs: 60_000, maxRequests: 10  })  // 10 login attempts / min / ip
+  .addRouteLimit('/v1/keys',                 { windowMs: 60_000, maxRequests: 30  })  // 30 key ops / min / org
+  .addRouteLimit('/v1/audit-logs',           { windowMs: 60_000, maxRequests: 60  })  // 60 log reads / min / org
+  .addRouteLimit('/v1/org/stats',            { windowMs: 30_000, maxRequests: 30  })  // dashboard polling
+  .addRouteLimit('/v1/permissions',          { windowMs: 60_000, maxRequests: 30  })
+  .addRouteLimit('/v1/audit/recent',         { windowMs: 60_000, maxRequests: 30  })
+  .addRouteLimit('/v1/audit/integrity',      { windowMs: 60_000, maxRequests: 10  })  // expensive chain scan
+  .addRouteLimit('/v1/compliance/soc2-report', { windowMs: 300_000, maxRequests: 5 }); // 5 / 5 min — report is heavy
 
 // --- UTILS ---
 const generateId = () => crypto.randomUUID().substring(0, 12);
@@ -37,7 +42,11 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 app.use(requestLogger());
-app.use(rateLimiter.middleware());
+// NOTE: rateLimiter is applied PER-ROUTE after authenticateApiKey so that
+// req.user.organizationId is available for org-level keying.
+// Unauthenticated endpoints (/health, /v1/auth/login) use the global middleware below.
+app.use('/health',         rateLimiter.middleware());
+app.use('/v1/auth',        rateLimiter.middleware());
 app.use(hipaaMiddleware());
 
 // --- HEALTH CHECK ---
@@ -59,7 +68,7 @@ app.get('/health', (_req, res) => {
  * POST /v1/execute
  * Submit code for security analysis and sandboxed execution.
  */
-app.post('/v1/execute', authenticateApiKey, async (req: AuthRequest, res: Response) => {
+app.post('/v1/execute', authenticateApiKey, rateLimiter.middleware(), async (req: AuthRequest, res: Response) => {
   try {
     const validation = validateExecutionRequest(req.body);
     if (!validation.isValid) {
@@ -162,7 +171,7 @@ app.post('/v1/execute', authenticateApiKey, async (req: AuthRequest, res: Respon
  * GET /v1/approvals/:id
  * Poll the status of a pending approval request.
  */
-app.get('/v1/approvals/:id', authenticateApiKey, (req: AuthRequest, res: Response) => {
+app.get('/v1/approvals/:id', authenticateApiKey, rateLimiter.middleware(), (req: AuthRequest, res: Response) => {
   try {
     const approval = db.getApprovalRequest(req.params.id);
     if (!approval) return res.status(404).json({ error: 'Not found' });
@@ -190,7 +199,7 @@ app.get('/v1/approvals/:id', authenticateApiKey, (req: AuthRequest, res: Respons
  * POST /v1/approvals/:id/approve
  * Grant permission for a pending execution (admin/approver only).
  */
-app.post('/v1/approvals/:id/approve', authenticateApiKey, requireRole(['admin', 'approver']), async (req: AuthRequest, res: Response) => {
+app.post('/v1/approvals/:id/approve', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin', 'approver']), async (req: AuthRequest, res: Response) => {
   try {
     const approval = db.getApprovalRequest(req.params.id);
     if (!approval) return res.status(404).json({ error: 'Not found' });
@@ -246,7 +255,7 @@ app.post('/v1/approvals/:id/approve', authenticateApiKey, requireRole(['admin', 
  * POST /v1/approvals/:id/reject
  * Reject a pending execution (admin/approver only).
  */
-app.post('/v1/approvals/:id/reject', authenticateApiKey, requireRole(['admin', 'approver']), async (req: AuthRequest, res: Response) => {
+app.post('/v1/approvals/:id/reject', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin', 'approver']), async (req: AuthRequest, res: Response) => {
   try {
     const approval = db.getApprovalRequest(req.params.id);
     if (!approval) return res.status(404).json({ error: 'Not found' });
@@ -285,7 +294,7 @@ app.post('/v1/approvals/:id/reject', authenticateApiKey, requireRole(['admin', '
  * GET /v1/permissions
  * List all configured permissions.
  */
-app.get('/v1/permissions', authenticateApiKey, requireRole(['admin']), (_req: AuthRequest, res: Response) => {
+app.get('/v1/permissions', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), (_req: AuthRequest, res: Response) => {
   try {
     const permissions = db.getAllPermissions();
     res.json({ permissions, count: permissions.length });
@@ -299,7 +308,7 @@ app.get('/v1/permissions', authenticateApiKey, requireRole(['admin']), (_req: Au
  * GET /v1/audit/integrity
  * Verify the integrity of the audit log chain.
  */
-app.get('/v1/audit/integrity', authenticateApiKey, requireRole(['admin']), (_req: AuthRequest, res: Response) => {
+app.get('/v1/audit/integrity', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), (_req: AuthRequest, res: Response) => {
   try {
     const result = auditLogger.verifyIntegrity();
     res.json({
@@ -318,7 +327,7 @@ app.get('/v1/audit/integrity', authenticateApiKey, requireRole(['admin']), (_req
  * GET /v1/audit/recent
  * Get recent audit log entries.
  */
-app.get('/v1/audit/recent', authenticateApiKey, requireRole(['admin']), (req: AuthRequest, res: Response) => {
+app.get('/v1/audit/recent', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), (req: AuthRequest, res: Response) => {
   try {
     const limit = parseInt(req.query.limit as string) || 20;
     const entries = auditLogger.getRecentEntries(Math.min(limit, 100));
@@ -333,7 +342,7 @@ app.get('/v1/audit/recent', authenticateApiKey, requireRole(['admin']), (req: Au
  * GET /v1/compliance/soc2-report
  * Generate a SOC2 compliance report.
  */
-app.get('/v1/compliance/soc2-report', authenticateApiKey, requireRole(['admin']), async (_req: AuthRequest, res: Response) => {
+app.get('/v1/compliance/soc2-report', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), async (_req: AuthRequest, res: Response) => {
   try {
     const report = await generateSOC2Report([], []);
     res.json({ report });
@@ -347,7 +356,7 @@ app.get('/v1/compliance/soc2-report', authenticateApiKey, requireRole(['admin'])
  * POST /v1/analyze
  * Analyze code without executing it.
  */
-app.post('/v1/analyze', authenticateApiKey, async (req: AuthRequest, res: Response) => {
+app.post('/v1/analyze', authenticateApiKey, rateLimiter.middleware(), async (req: AuthRequest, res: Response) => {
   try {
     const { code, language } = req.body;
     if (!code || !language) {
@@ -421,7 +430,7 @@ app.post('/v1/auth/login', (req: AuthRequest, res: Response) => {
  * GET /v1/approvals
  * List all approval requests (pending by default).
  */
-app.get('/v1/approvals', authenticateApiKey, requireRole(['admin', 'approver']), (req: AuthRequest, res: Response) => {
+app.get('/v1/approvals', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin', 'approver']), (req: AuthRequest, res: Response) => {
   try {
     const status = (req.query.status as string) || undefined;
     const approvals = db.listApprovalRequests(status);
@@ -449,7 +458,7 @@ app.get('/v1/approvals', authenticateApiKey, requireRole(['admin', 'approver']),
  * POST /v1/approvals/:id/deny
  * Alias for /reject — used by the frontend dashboard.
  */
-app.post('/v1/approvals/:id/deny', authenticateApiKey, requireRole(['admin', 'approver']), async (req: AuthRequest, res: Response) => {
+app.post('/v1/approvals/:id/deny', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin', 'approver']), async (req: AuthRequest, res: Response) => {
   try {
     const approval = db.getApprovalRequest(req.params.id);
     if (!approval) return res.status(404).json({ error: 'Not found' });
@@ -473,7 +482,7 @@ app.post('/v1/approvals/:id/deny', authenticateApiKey, requireRole(['admin', 'ap
  * GET /v1/keys
  * List API keys for the authenticated user's organization.
  */
-app.get('/v1/keys', authenticateApiKey, (req: AuthRequest, res: Response) => {
+app.get('/v1/keys', authenticateApiKey, rateLimiter.middleware(), (req: AuthRequest, res: Response) => {
   try {
     const keys = db.getApiKeysByOrg(req.user!.organizationId);
     const data = keys.map((k: any) => ({
@@ -497,7 +506,7 @@ app.get('/v1/keys', authenticateApiKey, (req: AuthRequest, res: Response) => {
  * POST /v1/keys
  * Create a new API key for the authenticated user.
  */
-app.post('/v1/keys', authenticateApiKey, requireRole(['admin']), async (req: AuthRequest, res: Response) => {
+app.post('/v1/keys', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), async (req: AuthRequest, res: Response) => {
   try {
     const { name, expiresAt } = req.body;
     if (!name) return res.status(400).json({ error: 'Missing "name" field' });
@@ -540,7 +549,7 @@ app.post('/v1/keys', authenticateApiKey, requireRole(['admin']), async (req: Aut
  * POST /v1/keys/:id/revoke
  * Revoke an API key.
  */
-app.post('/v1/keys/:id/revoke', authenticateApiKey, requireRole(['admin']), (req: AuthRequest, res: Response) => {
+app.post('/v1/keys/:id/revoke', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), (req: AuthRequest, res: Response) => {
   try {
     db.revokeApiKey(req.params.id);
 
@@ -565,7 +574,7 @@ app.post('/v1/keys/:id/revoke', authenticateApiKey, requireRole(['admin']), (req
  * GET /v1/org/stats
  * Get organization overview statistics for the dashboard.
  */
-app.get('/v1/org/stats', authenticateApiKey, (req: AuthRequest, res: Response) => {
+app.get('/v1/org/stats', authenticateApiKey, rateLimiter.middleware(), (req: AuthRequest, res: Response) => {
   try {
     const dbStats = db.getStats();
     const auditCount = auditLogger.getEntryCount();
@@ -599,7 +608,7 @@ app.get('/v1/org/stats', authenticateApiKey, (req: AuthRequest, res: Response) =
  * GET /v1/audit-logs
  * Alias for /v1/audit/recent — used by the frontend dashboard.
  */
-app.get('/v1/audit-logs', authenticateApiKey, requireRole(['admin']), (req: AuthRequest, res: Response) => {
+app.get('/v1/audit-logs', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), (req: AuthRequest, res: Response) => {
   try {
     const limit = parseInt(req.query.limit as string) || 50;
     const entries = auditLogger.getRecentEntries(Math.min(limit, 100));
