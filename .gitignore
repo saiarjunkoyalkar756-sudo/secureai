@@ -3,6 +3,10 @@ dist/
 *.log
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 .env
 exec_resp.json
 server.log
+temp_src/
+*.zip

@@ -1,3 +1,18 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  /* Dashboard Tokens */
+  --dash-bg:      #0b0d11;
+  --dash-surface: #13151c;
+  --dash-border:  #1e2130;
+  --dash-sidebar: #0e1018;
+  --dash-amber:   #f59e0b;
+  --dash-red:     #ef4444;
+  --dash-green:   #10b981;
+  --dash-cyan:    #22d3ee;
+  --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
 :root {
   /* Dynamic Palette: Deep Space to Neon Cyber */
   --bg-primary: #05060A; /* Extremely deep blue-black */

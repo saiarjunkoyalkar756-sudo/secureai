@@ -4,10 +4,17 @@ import { Button } from './ui/Button';
 import { Play, Loader2, AlertCircle } from 'lucide-react';
 import './Playground.css';
 
+interface PlaygroundResult {
+  status: string;
+  stdout?: string;
+  message?: string;
+  riskScore?: number;
+}
+
 export const Playground: React.FC = () => {
   const [code, setCode] = useState("console.log('Testing deep space backend connection...');");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<PlaygroundResult | null>(null);
 
   const runCode = async () => {
     setLoading(true);
@@ -18,15 +25,15 @@ export const Playground: React.FC = () => {
       const res = await fetch(`${apiUrl}/v1/execute`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer sk_test_admin_123456' // Using the newly hashed seeded key
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ code, language: 'node20' })
       });
       const data = await res.json();
       setResult(data);
-    } catch (err: any) {
-      setResult({ status: 'error', message: err.message || 'Network error reaching API.' });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Network error reaching API.';
+      setResult({ status: 'error', message });
     } finally {
       setLoading(false);
     }

@@ -1,0 +1,131 @@
+.dashboard-root {
+  display: flex;
+  min-height: 100vh;
+  background: var(--dash-bg);
+}
+
+.dashboard-main {
+  flex: 1;
+  margin-left: 240px;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.dashboard-topbar {
+  height: 52px;
+  background: var(--dash-sidebar);
+  border-bottom: 1px solid var(--dash-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+.topbar-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.84rem;
+}
+
+.topbar-brand {
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+
+.topbar-sep { color: var(--dash-border); }
+
+.topbar-page {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.topbar-right { display: flex; gap: 12px; align-items: center; }
+
+.topbar-env {
+  font-size: 0.72rem;
+  font-family: var(--mono);
+  background: rgba(16,185,129,0.1);
+  border: 1px solid rgba(16,185,129,0.25);
+  color: var(--dash-green);
+  padding: 3px 10px;
+  border-radius: 20px;
+}
+
+.topbar-user {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.topbar-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(99,102,241,0.25);
+  border: 1px solid rgba(99,102,241,0.4);
+  color: #818cf8;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+}
+
+.topbar-email {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-logout {
+  background: none;
+  border: 1px solid var(--dash-border);
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s, color 0.15s;
+}
+.topbar-logout:hover { border-color: var(--dash-red); color: var(--dash-red); }
+
+.dashboard-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Panel transition animation */
+.dashboard-panel-wrapper {
+  animation: panelFadeIn 0.25s ease-out;
+}
+
+@keyframes panelFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 768px) {
+  .dashboard-main {
+    margin-left: 0;
+  }
+}

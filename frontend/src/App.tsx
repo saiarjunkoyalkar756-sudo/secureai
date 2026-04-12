@@ -1,36 +1,38 @@
-import { Hero } from './components/Hero'
-import { Features } from './components/Features'
-import { Playground } from './components/Playground'
-import { Pricing } from './components/Pricing'
-import { ShieldAlert } from 'lucide-react'
-import './index.css'
+import React from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { LandingPage }  from './pages/LandingPage';
+import { Dashboard }    from './pages/Dashboard';
+import { LoginPage }    from './pages/LoginPage';
+import { SignupPage }   from './pages/SignupPage';
+import { AuthProvider, useAuth } from './lib/auth-context';
+import './index.css';
+
+/** Guard that redirects unauthenticated users to /login */
+function PrivateRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading } = useAuth();
+  if (isLoading) return null; // wait for session restore
+  return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />;
+}
 
 function App() {
   return (
-    <>
-      <nav style={{ padding: '24px 40px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--glass-border)', background: 'var(--bg-secondary)', position: 'sticky', top: 0, zIndex: 100 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 'bold', fontSize: '1.2rem', color: 'var(--text-primary)' }}>
-          <ShieldAlert className="text-accent" color="#6366F1" /> SecureAI
-        </div>
-        <div style={{ display: 'flex', gap: '24px', color: 'var(--text-secondary)', fontSize: '0.9rem', fontWeight: 500 }}>
-          <a href="#features" style={{ textDecoration: 'none', color: 'inherit' }}>Features</a>
-          <a href="#playground" style={{ textDecoration: 'none', color: 'inherit' }}>Playground</a>
-          <a href="#pricing" style={{ textDecoration: 'none', color: 'inherit' }}>Pricing</a>
-        </div>
-      </nav>
-
-      <main>
-        <Hero />
-        <Features />
-        <Playground />
-        <Pricing />
-      </main>
-
-      <footer style={{ padding: '60px 24px', textAlign: 'center', borderTop: '1px solid var(--glass-border)', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-        <p>&copy; 2026 SecureAI. Build safely.</p>
-      </footer>
-    </>
-  )
+    <BrowserRouter>
+      <AuthProvider>
+        <Routes>
+          <Route path="/"          element={<LandingPage />} />
+          <Route path="/login"     element={<LoginPage />} />
+          <Route path="/signup"    element={<SignupPage />} />
+          <Route path="/dashboard" element={
+            <PrivateRoute>
+              <Dashboard />
+            </PrivateRoute>
+          } />
+          {/* Catch-all → landing */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AuthProvider>
+    </BrowserRouter>
+  );
 }
 
-export default App
+export default App;

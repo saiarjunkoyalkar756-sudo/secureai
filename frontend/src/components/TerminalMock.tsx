@@ -12,7 +12,7 @@ export const TerminalMock: React.FC = () => {
       () => setStep(3)  // Show blocked
     ];
     
-    let delays = [1000, 2500, 3500];
+    const delays = [1000, 2500, 3500];
     const timers = delays.map((d, i) => setTimeout(sequence[i], d));
     
     return () => timers.forEach(clearTimeout);
