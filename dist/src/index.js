@@ -5,7 +5,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const routes_1 = __importDefault(require("./api/routes"));
 const config_1 = require("./config");
-const server = routes_1.default.listen(config_1.config.port, () => {
+// Log the PORT Railway assigns — critical for diagnosing proxy routing issues
+console.log(`[Startup] PORT env = ${process.env.PORT ?? 'not set'}, binding to ${config_1.config.port}`);
+const server = routes_1.default.listen(config_1.config.port, '0.0.0.0', () => {
     console.log('');
     console.log('  ╔═══════════════════════════════════════════════╗');
     console.log('  ║     🛡️  SecureAI Platform API v' + config_1.config.version + '          ║');

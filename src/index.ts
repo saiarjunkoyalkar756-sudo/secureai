@@ -1,7 +1,11 @@
 import app from './api/routes';
 import { config } from './config';
 
-const server = app.listen(config.port, () => {
+// Log the PORT Railway assigns — critical for diagnosing proxy routing issues
+console.log(`[Startup] PORT env = ${process.env.PORT ?? 'not set'}, binding to ${config.port}`);
+
+const server = app.listen(config.port, '0.0.0.0', () => {
+
   console.log('');
   console.log('  ╔═══════════════════════════════════════════════╗');
   console.log('  ║     🛡️  SecureAI Platform API v' + config.version + '          ║');
