@@ -643,5 +643,72 @@ app.get('/v1/audit-logs', authenticateApiKey, rateLimiter.middleware(), requireR
   }
 });
 
-export default app;
+/**
+ * POST /v1/setup
+ * First-run database seed. Creates an admin user + API key if the DB is empty.
+ *
+ * Safety rules:
+ *   - Refuses if any users already exist (truly one-time)
+ *   - Optionally protected by SETUP_TOKEN env var
+ *   - Returns the generated API key ONCE — copy it immediately
+ */
+app.post('/v1/setup', async (req: AuthRequest, res: Response) => {
+  try {
+    // Optional token protection — set SETUP_TOKEN in Railway env vars
+    const setupToken = process.env.SETUP_TOKEN;
+    if (setupToken && req.headers['x-setup-token'] !== setupToken) {
+      return res.status(401).json({ error: 'Invalid or missing X-Setup-Token header' });
+    }
 
+    // Refuse if DB already has users — this is a one-time operation
+    const stats = db.getStats();
+    if (stats.users > 0) {
+      return res.status(409).json({
+        error: 'Database already seeded',
+        message: `Found ${stats.users} existing user(s). Setup can only run on an empty database.`,
+        hint: 'Use the dashboard to create additional users and API keys.'
+      });
+    }
+
+    const orgId   = 'org_' + generateId();
+    const userId  = 'user_' + generateId();
+    const keyId   = 'key_' + generateId();
+    const rawKey  = 'sk_live_' + crypto.randomUUID().replace(/-/g, '').slice(0, 24);
+    const email   = req.body.email || 'admin@secureai.io';
+
+    // Create org admin user
+    db.createUser({ id: userId, email, organizationId: orgId, role: 'admin' });
+
+    // Create API key (bcrypt-hashed, takes ~100ms)
+    await db.createApiKey(keyId, userId, rawKey, orgId, { name: 'Admin Key (Production)' });
+
+    auditLogger.log({
+      timestamp: new Date(),
+      executionId: 'setup_' + generateId(),
+      userId,
+      action: 'initial_setup',
+      resourcesBefore: {},
+      resourcesAfter: { email, organizationId: orgId },
+      metadata: { ip: req.ip || 'unknown', note: 'First-run database seed' }
+    });
+
+    console.log(`[Setup] ✅ Production DB seeded. Admin: ${email} | Org: ${orgId}`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Database seeded. Save your API key — it will not be shown again.',
+      credentials: {
+        email,
+        apiKey: rawKey,        // ← copy this immediately
+        keyPrefix: rawKey.substring(0, 12),
+        organizationId: orgId,
+        role: 'admin'
+      }
+    });
+  } catch (err) {
+    console.error('[Setup] ❌ Seed error:', err);
+    res.status(500).json({ error: 'Internal server error during setup', details: String(err) });
+  }
+});
+
+export default app;
