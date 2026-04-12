@@ -5,7 +5,11 @@ import { TerminalMock } from './TerminalMock';
 import { ChevronRight, ShieldCheck } from 'lucide-react';
 import './Hero.css';
 
-export const Hero: React.FC = () => {
+interface HeroProps {
+  onCtaClick: () => void;
+}
+
+export const Hero: React.FC<HeroProps> = ({ onCtaClick }) => {
   return (
     <section className="hero-section">
       <div className="hero-container">
@@ -28,11 +32,9 @@ export const Hero: React.FC = () => {
           </p>
           
           <div className="hero-actions animate-slide-up-delayed-2">
-            <a href="#playground">
-              <Button size="lg" icon={<ChevronRight size={20} />}>
-                Start Sandboxing
-              </Button>
-            </a>
+            <Button size="lg" icon={<ChevronRight size={20} />} onClick={onCtaClick}>
+              Start Sandboxing
+            </Button>
             <Button variant="secondary" size="lg" icon={<ShieldCheck size={20} />}>
               Read Security Whitepaper
             </Button>

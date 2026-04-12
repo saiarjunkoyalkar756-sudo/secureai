@@ -46,6 +46,25 @@ class EmailService {
         return this.send({ to: userEmail, subject, body });
     }
     /**
+     * Send a waitlist confirmation email
+     */
+    async sendWaitlistConfirmation(email, tier) {
+        const subject = `Welcome to the SecureAI Waitlist!`;
+        const body = `
+      Hi there,
+
+      Thanks for joining the SecureAI waitlist for the ${tier} tier!
+
+      We're working hard to revolutionize safe AI code execution, and we'll notify you as soon as your spot is ready.
+
+      In the meantime, feel free to check out our documentation or follow us on GitHub.
+
+      Stay secure,
+      The SecureAI Team
+    `;
+        return this.send({ to: email, subject, body });
+    }
+    /**
      * Core send method (Mocks SendGrid integration)
      */
     async send(options) {

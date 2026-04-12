@@ -122,6 +122,12 @@ export class PermissionDB {
           FOREIGN KEY(userId) REFERENCES users(id)
         );
 
+        CREATE TABLE IF NOT EXISTS waitlist (
+          email TEXT PRIMARY KEY,
+          tier TEXT NOT NULL,
+          createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE INDEX IF NOT EXISTS idx_perm_resource ON permissions(resource);
         CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(status);
         CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(keyHash);
@@ -258,14 +264,32 @@ export class PermissionDB {
     return this.mapApprovalRow(rows[0]);
   }
 
-  async updateApprovalStatus(id: string, status: string, approverId: string, reason?: string): Promise<void> {
+  async updateApprovalStatus(id: string, status: 'approved' | 'rejected', approvedBy: string, reason?: string) {
     if (this.isMock) {
-      const req = this.mockStore.approval_requests.get(id);
-      if (req) { Object.assign(req, { status, approvedBy: approverId, reason, approvalTime: new Date().toISOString() }); }
+      const request = this.mockStore.approval_requests.get(id);
+      if (request) {
+        request.status = status;
+        request.approvedBy = approvedBy;
+        request.reason = reason;
+        request.approvalTime = new Date().toISOString();
+      }
       return;
     }
-    await this.pool!.query(`UPDATE approval_requests SET status = $1, approvedBy = $2, reason = $3, approvalTime = $4 WHERE id = $5`, 
-      [status, approverId, reason || null, new Date().toISOString(), id]
+
+    await this.pool!.query(
+      'UPDATE approval_requests SET status = $1, approvedBy = $2, reason = $3, approvalTime = $4 WHERE id = $5',
+      [status, approvedBy, reason, new Date().toISOString(), id]
+    );
+  }
+
+  async addLead(email: string, tier: string): Promise<void> {
+    if (this.isMock) {
+      console.log(`[MockDB] Added lead: ${email} for tier ${tier}`);
+      return;
+    }
+    await this.pool!.query(
+      'INSERT INTO waitlist (email, tier) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING',
+      [email, tier]
     );
   }
 

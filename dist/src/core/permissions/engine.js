@@ -1,6 +1,42 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PermissionEngine = void 0;
+const js_analyzer_1 = require("./js_analyzer");
+const child_process_1 = require("child_process");
+const path = __importStar(require("path"));
 /**
  * PermissionEngine — Static analysis and permission checking for code execution.
  *
@@ -110,14 +146,59 @@ class PermissionEngine {
             suspiciousPatterns: [],
             riskScore: 0
         };
+        // --- AST Parsing (Tier 1) ---
+        if (language === 'node20') {
+            const astResult = (0, js_analyzer_1.analyzeJavascriptAST)(code);
+            if (astResult.status === 'error') {
+                analysis.suspiciousPatterns.push({
+                    pattern: 'compile_error', severity: 'critical', recommendation: `Syntax error: ${astResult.message}`
+                });
+            }
+            else if (astResult.analysis) {
+                astResult.analysis.suspicious.forEach(s => {
+                    analysis.suspiciousPatterns.push({ pattern: 'ast_detected', severity: 'high', recommendation: s });
+                });
+                // Route literal AST arguments to permissions
+                astResult.analysis.args.forEach(arg => {
+                    if (arg.startsWith('http'))
+                        analysis.networksAccessed.push(arg);
+                    else if (arg.includes('/'))
+                        analysis.filesAccessed.push(arg);
+                    else if (astResult.analysis.calls.some(c => c.includes('exec') || c.includes('spawn'))) {
+                        analysis.subprocesses.push(arg);
+                    }
+                });
+            }
+        }
+        else if (language === 'python3.11') {
+            try {
+                const pyAnalyzerPath = path.join(__dirname, 'python_analyzer.py');
+                const proc = (0, child_process_1.spawnSync)(process.platform === 'win32' ? 'py' : 'python3', [pyAnalyzerPath], { input: code, encoding: 'utf-8' });
+                if (proc.status === 0 && proc.stdout) {
+                    const parsed = JSON.parse(proc.stdout);
+                    if (parsed.status === 'success' && parsed.analysis) {
+                        // Map python AST results
+                        parsed.analysis.suspicious.forEach((s) => {
+                            analysis.suspiciousPatterns.push({ pattern: 'ast_detected', severity: 'high', recommendation: s });
+                        });
+                        parsed.analysis.calls.forEach((cmd) => {
+                            if (cmd === 'os.system' || cmd.includes('subprocess'))
+                                analysis.subprocesses.push(cmd);
+                        });
+                    }
+                    else if (parsed.status === 'error') {
+                        analysis.suspiciousPatterns.push({
+                            pattern: 'compile_error', severity: 'critical', recommendation: `Syntax error: ${parsed.message}`
+                        });
+                    }
+                }
+            }
+            catch (e) { } // Graceful fallback if AST execution fails
+        }
+        // --- Regex Fallbacks (Tier 2) ---
         // 1. Extract File Paths
         const filePatterns = [
-            /open\(['"](.+?)['"]/g, // Python/JS open
             /read_file\(['"](.+?)['"]/g, // General
-            /fs\.\w+Sync\(['"](.+?)['"]/g, // Node.js fs sync
-            /fs\.\w+\(['"](.+?)['"]/g, // Node.js fs async
-            /readFileSync\(['"](.+?)['"]/g, // Node.js readFileSync
-            /writeFileSync\(['"](.+?)['"]/g, // Node.js writeFileSync
             /cat\s+([^\s;&|<>]+)/g, // Bash cat
             /os\.Open\(['"](.+?)['"]/g, // Go file open
         ];
@@ -125,31 +206,17 @@ class PermissionEngine {
         // 2. Extract Network Domains
         const networkPatterns = [
             /https?:\/\/([a-zA-Z0-9.-]+)/g, // URLs
-            /requests\.\w+\(['"]https?:\/\/([a-zA-Z0-9.-]+)/g, // Python requests
-            /fetch\(['"]https?:\/\/([a-zA-Z0-9.-]+)/g, // JS fetch
             /curl\s+.*?https?:\/\/([a-zA-Z0-9.-]+)/g, // Bash curl
-            /axios\.\w+\(['"]https?:\/\/([a-zA-Z0-9.-]+)/g, // Axios
             /http\.Get\(['"]https?:\/\/([a-zA-Z0-9.-]+)/g, // Go http
-            /urllib\.request\.urlopen\(['"]https?:\/\/([a-zA-Z0-9.-]+)/g, // Python urllib
-            /socket\.connect\(\(['"]([a-zA-Z0-9.-]+)['"]/g, // Python socket
         ];
         this.extractMatches(code, networkPatterns, analysis.networksAccessed);
         // 3. Extract Subprocesses
         const subprocessPatterns = [
-            /os\.system\(['"](.+?)['"]/g, // Python os.system
-            /subprocess\.\w+\(\[(.+?)\]/g, // Python subprocess
-            /exec\(['"](.+?)['"]/g, // JS/Bash exec
-            /child_process\.\w+\(['"](.+?)['"]/g, // Node.js child_process
-            /execSync\(['"](.+?)['"]/g, // Node.js execSync
-            /spawnSync\(['"](.+?)['"]/g, // Node.js spawnSync
-            /Popen\(\[(.+?)\]/g, // Python Popen
+            /exec\(['"](.+?)['"]/g, // Bash exec
         ];
         this.extractMatches(code, subprocessPatterns, analysis.subprocesses);
         // 4. Extract Env Vars
         const envPatterns = [
-            /os\.environ\[['"](.+?)['"]\]/g, // Python
-            /os\.getenv\(['"](.+?)['"]\)/g, // Python getenv
-            /process\.env\.(\w+)/g, // JS
             /getenv\(['"](.+?)['"]/g, // General
             /\$\{?(\w+)\}?/g // Bash (but filter common ones)
         ];

@@ -4,48 +4,53 @@ import { Button } from './ui/Button';
 import { Check } from 'lucide-react';
 import './Pricing.css';
 
+interface PricingProps {
+  onPlanSelect: (tier: string) => void;
+}
+
 const pricingPlans = [
   {
-    name: "Beta Trial",
-    price: "$1,250",
+    name: "Free",
+    price: "$0",
     period: "/mo",
-    description: "Limited time beta pricing for early adopters.",
+    description: "Perfect for exploring SecureAI's core safety capabilities.",
     features: [
-      "50K executions / month",
-      "Email support",
-      "Basic audit logs",
-      "3-month minimum commitment"
+      "100 executions / month",
+      "1 API key",
+      "Community support",
+      "Standard audit logs"
     ],
-    buttonText: "Join Beta",
+    buttonText: "Join Waitlist",
     variant: "secondary" as const,
     glow: false
   },
   {
-    name: "Starter",
-    price: "$2,500",
+    name: "Pro",
+    price: "$49",
     period: "/mo",
-    description: "For teams deploying their first AI agents into production.",
+    description: "For professional developers and scaling AI applications.",
     features: [
-      "50K executions / month",
+      "10,000 executions / month",
+      "5 API keys",
       "Email support",
-      "Advanced compliance reports",
-      "SLA guarantees"
+      "HITL Approvals",
+      "Advanced compliance"
     ],
-    buttonText: "Schedule Demo",
+    buttonText: "Get Pro Access",
     variant: "primary" as const,
     glow: true,
-    badge: "Most Popular"
+    badge: "Best Value"
   },
   {
     name: "Enterprise",
     price: "Custom",
     period: "",
-    description: "For organizations running millions of automated workflows.",
+    description: "Industrial-grade security for teams running millions of jobs.",
     features: [
       "Unlimited executions",
-      "Dedicated 24/7 support",
-      "Custom sandbox integrations",
-      "On-premise deployment options"
+      "SSO & Directory Sync",
+      "SOC2 / HIPAA Reports",
+      "Dedicated 24/7 SLA"
     ],
     buttonText: "Contact Sales",
     variant: "secondary" as const,
@@ -53,7 +58,7 @@ const pricingPlans = [
   }
 ];
 
-export const Pricing: React.FC = () => {
+export const Pricing: React.FC<PricingProps> = ({ onPlanSelect }) => {
   return (
     <section className="pricing-section" id="pricing">
       <div className="section-header">
@@ -72,7 +77,11 @@ export const Pricing: React.FC = () => {
             </div>
             <p className="plan-description">{plan.description}</p>
             
-            <Button variant={plan.variant} className="w-full mb-8">
+            <Button 
+              variant={plan.variant} 
+              className="w-full mb-8"
+              onClick={() => onPlanSelect(plan.name)}
+            >
               {plan.buttonText}
             </Button>
             

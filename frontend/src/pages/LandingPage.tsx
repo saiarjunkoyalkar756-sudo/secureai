@@ -1,14 +1,23 @@
-import { Hero }     from '../components/Hero';
-import { Features }  from '../components/Features';
+import { Hero } from '../components/Hero';
+import { Features } from '../components/Features';
 import { Playground } from '../components/Playground';
-import { Pricing }   from '../components/Pricing';
+import { Pricing } from '../components/Pricing';
+import { WaitlistModal } from '../components/WaitlistModal';
 import { ShieldAlert } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../lib/auth-context';
+import { useState } from 'react';
 import '../components/Landing.css';
 
 export const LandingPage = () => {
   const { isAuthenticated } = useAuth();
+  const [isWaitlistOpen, setIsWaitlistOpen] = useState(false);
+  const [selectedTier, setSelectedTier] = useState('Free');
+
+  const openWaitlist = (tier: string = 'Free') => {
+    setSelectedTier(tier);
+    setIsWaitlistOpen(true);
+  };
 
   return (
     <>
@@ -29,20 +38,30 @@ export const LandingPage = () => {
               <Link to="/login" className="landing-nav__link landing-nav__link--signin" id="nav-signin-link">
                 Sign In
               </Link>
-              <Link to="/signup" className="landing-nav__cta" id="nav-signup-link">
+              <button 
+                onClick={() => openWaitlist('Free')} 
+                className="landing-nav__cta" 
+                id="nav-signup-link"
+              >
                 Get Started →
-              </Link>
+              </button>
             </>
           )}
         </div>
       </nav>
 
       <main>
-        <Hero />
+        <Hero onCtaClick={() => openWaitlist('Free')} />
         <Features />
         <Playground />
-        <Pricing />
+        <Pricing onPlanSelect={openWaitlist} />
       </main>
+
+      <WaitlistModal 
+        isOpen={isWaitlistOpen} 
+        onClose={() => setIsWaitlistOpen(false)} 
+        selectedTier={selectedTier} 
+      />
 
       <footer className="landing-footer">
         <div className="landing-footer__inner">
