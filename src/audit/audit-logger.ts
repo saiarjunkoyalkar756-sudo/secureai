@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { Pool } from 'pg';
 
 export interface AuditEntry {
   id: string;
@@ -13,57 +14,58 @@ export interface AuditEntry {
   signature: string; 
 }
 
-/**
- * AuditLogger — Immutable, cryptographically-signed audit trail.
- * 
- * Features:
- * - Hash chain: Each entry's hash depends on the previous entry
- * - HMAC signing: All entries signed with a server-side key
- * - Integrity verification: Detect tampering in the chain
- * - Convenience methods for common audit events
- */
 export class AuditLogger {
-  private db: any;
+  private pool: Pool | null = null;
   private signingKey: Buffer;
   private isMock: boolean = false;
   private mockLog: AuditEntry[] = [];
 
-  constructor(dbPath: string, signingKey: Buffer) {
+  constructor(postgresUrl: string | undefined, signingKey: Buffer) {
     this.signingKey = signingKey;
-    try {
-      const Database = require('better-sqlite3');
-      this.db = new Database(dbPath);
-      this.initializeSchema();
-    } catch (err) {
+    if (postgresUrl) {
+      try {
+        this.pool = new Pool({
+          connectionString: postgresUrl,
+          ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined
+        });
+        this.initializeSchema();
+      } catch (err) {
+        this.isMock = true;
+        console.warn(`[AuditLogger] ⚠ Failed to connect. Falling back to IN-MEMORY MOCK MODE.`);
+      }
+    } else {
       this.isMock = true;
-      console.warn(`[AuditLogger] ⚠ Falling back to IN-MEMORY MOCK MODE.`);
     }
   }
 
-  private initializeSchema() {
-    if (this.isMock) return;
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS audit_log (
-        id TEXT PRIMARY KEY,
-        timestamp TEXT,
-        executionId TEXT,
-        userId TEXT,
-        action TEXT,
-        resourcesBefore TEXT,
-        resourcesAfter TEXT,
-        metadata TEXT,
-        previousHash TEXT,
-        signature TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_audit_execution ON audit_log(executionId);
-      CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(userId);
-      CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
-    `);
+  private async initializeSchema() {
+    if (this.isMock || !this.pool) return;
+    try {
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS audit_log (
+          id TEXT PRIMARY KEY,
+          timestamp TIMESTAMP,
+          executionId TEXT,
+          userId TEXT,
+          action TEXT,
+          resourcesBefore TEXT,
+          resourcesAfter TEXT,
+          metadata TEXT,
+          previousHash TEXT,
+          signature TEXT,
+          created_serial SERIAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_execution ON audit_log(executionId);
+        CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(userId);
+        CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
+      `);
+    } catch (err) {
+      console.error('[AuditLogger] Failed to initialize schema:', err);
+    }
   }
 
   async log(entry: Omit<AuditEntry, 'id' | 'previousHash' | 'signature'>): Promise<AuditEntry> {
-    const lastEntry = this.getLastEntry();
-    // Always use the previous entry's SIGNATURE as the chain link (consistent in both mock and real modes)
+    const lastEntry = await this.getLastEntry();
     const previousHash = lastEntry ? lastEntry.signature : '';
 
     const auditEntry: AuditEntry = {
@@ -80,11 +82,15 @@ export class AuditLogger {
     if (this.isMock) {
       this.mockLog.push(auditEntry);
     } else {
-      this.db.prepare(`INSERT INTO audit_log (id, timestamp, executionId, userId, action, resourcesBefore, resourcesAfter, metadata, previousHash, signature) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      await this.pool!.query(`
+        INSERT INTO audit_log (
+          id, timestamp, executionId, userId, action, resourcesBefore, resourcesAfter, metadata, previousHash, signature
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `, [
         auditEntry.id, auditEntry.timestamp.toISOString(), auditEntry.executionId, auditEntry.userId, auditEntry.action,
         JSON.stringify(auditEntry.resourcesBefore), JSON.stringify(auditEntry.resourcesAfter), JSON.stringify(auditEntry.metadata),
         previousHash, signature
-      );
+      ]);
     }
 
     return auditEntry;
@@ -168,22 +174,20 @@ export class AuditLogger {
 
   // --- Integrity Verification ---
 
-  verifyIntegrity(): { valid: boolean; tamperedIds: string[] } {
+  async verifyIntegrity(): Promise<{ valid: boolean; tamperedIds: string[] }> {
     const entries = this.isMock
       ? this.mockLog
-      : this.db.prepare('SELECT * FROM audit_log ORDER BY rowid ASC').all() as any[];
+      : (await this.pool!.query('SELECT * FROM audit_log ORDER BY created_serial ASC')).rows;
     const tamperedIds: string[] = [];
 
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
 
-      // 1. Verify the chain link: this entry's previousHash must equal the prior entry's signature
       if (i > 0) {
         const prevSignature = entries[i - 1].signature;
-        if (entry.previousHash !== prevSignature) tamperedIds.push(entry.id);
+        if ((entry.previousHash || entry.previoushash) !== prevSignature) tamperedIds.push(entry.id);
       }
 
-      // 2. Verify the HMAC signature of this entry itself
       const hash = this.computeHash(entry);
       const expectedSig = crypto.createHmac('sha256', this.signingKey).update(hash).digest('hex');
       if (entry.signature !== expectedSig) tamperedIds.push(entry.id);
@@ -192,28 +196,30 @@ export class AuditLogger {
     return { valid: tamperedIds.length === 0, tamperedIds };
   }
 
-  getEntryCount(): number {
+  async getEntryCount(): Promise<number> {
     if (this.isMock) return this.mockLog.length;
-    return (this.db.prepare('SELECT COUNT(*) as count FROM audit_log').get() as any).count;
+    const { rows } = await this.pool!.query('SELECT COUNT(*) as count FROM audit_log');
+    return parseInt(rows[0].count);
   }
 
-  getRecentEntries(limit: number = 20): AuditEntry[] {
+  async getRecentEntries(limit: number = 20): Promise<AuditEntry[]> {
     if (this.isMock) return this.mockLog.slice(-limit);
-    return this.db.prepare('SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?').all(limit) as AuditEntry[];
+    const { rows } = await this.pool!.query('SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT $1', [limit]);
+    return rows as any[];
   }
 
   private computeHash(entry: any): string {
     return crypto.createHash('sha256').update(JSON.stringify({
       timestamp: entry.timestamp instanceof Date ? entry.timestamp.toISOString() : entry.timestamp,
-      executionId: entry.executionId,
+      executionId: entry.executionId || entry.executionid,
       action: entry.action,
-      previousHash: entry.previousHash
+      previousHash: entry.previousHash || entry.previoushash
     })).digest('hex');
   }
 
-  private getLastEntry(): any | null {
+  private async getLastEntry(): Promise<any | null> {
     if (this.isMock) return this.mockLog[this.mockLog.length - 1] || null;
-    // In real mode, return the row directly — we use .signature for chaining now
-    return this.db.prepare('SELECT * FROM audit_log ORDER BY rowid DESC LIMIT 1').get() || null;
+    const { rows } = await this.pool!.query('SELECT * FROM audit_log ORDER BY created_serial DESC LIMIT 1');
+    return rows.length ? rows[0] : null;
   }
 }

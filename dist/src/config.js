@@ -34,14 +34,15 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.config = void 0;
-const path = __importStar(require("path"));
 const crypto = __importStar(require("crypto"));
 function loadConfig() {
     const errors = [];
     const port = parseInt(process.env.PORT || '3000', 10);
     const nodeEnv = process.env.NODE_ENV || 'development';
-    // Database path - resolve relative to project root
-    const databasePath = path.resolve(process.cwd(), process.env.DATABASE_PATH || 'secureai.db');
+    const postgresUrl = process.env.POSTGRES_URL;
+    if (nodeEnv === 'production' && !postgresUrl) {
+        console.warn('[Config] ⚠️ POSTGRES_URL is not set in production. Database will fall back to In-Memory Mock Mode.');
+    }
     // Audit signing key - generate a default for dev, warn loudly in production
     let auditSigningKey;
     if (process.env.AUDIT_SIGNING_KEY && process.env.AUDIT_SIGNING_KEY !== 'your_secure_audit_signing_key_here') {
@@ -78,7 +79,7 @@ function loadConfig() {
     return {
         port,
         nodeEnv,
-        databasePath,
+        postgresUrl,
         auditSigningKey,
         sendgridApiKey: sendgridApiKey?.startsWith('SG.your_') ? undefined : sendgridApiKey,
         sandbox: { memoryLimit, timeout },

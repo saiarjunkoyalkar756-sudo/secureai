@@ -12,7 +12,7 @@ const server = app.listen(config.port, '0.0.0.0', () => {
   console.log('  ╠═══════════════════════════════════════════════╣');
   console.log(`  ║  🌐 Server:     http://localhost:${config.port}          ║`);
   console.log(`  ║  🏗️  Environment: ${config.nodeEnv.padEnd(25)}  ║`);
-  console.log(`  ║  💾 Database:    ${config.databasePath.split(/[/\\]/).pop()?.padEnd(25)}  ║`);
+  console.log(`  ║  💾 Database:    ${(config.postgresUrl ? 'PostgreSQL' : 'In-Memory Mock').padEnd(25)}  ║`);
   console.log(`  ║  🏥 HIPAA Mode:  ${(config.hipaaMode ? 'ENABLED' : 'disabled').padEnd(25)}  ║`);
   console.log('  ╠═══════════════════════════════════════════════╣');
   console.log('  ║  Endpoints:                                   ║');

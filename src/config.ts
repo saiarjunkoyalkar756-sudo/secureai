@@ -10,7 +10,7 @@ import * as crypto from 'crypto';
 export interface AppConfig {
   port: number;
   nodeEnv: string;
-  databasePath: string;
+  postgresUrl: string | undefined;
   auditSigningKey: Buffer;
   sendgridApiKey: string | undefined;
   sandbox: {
@@ -32,11 +32,11 @@ function loadConfig(): AppConfig {
   const port = parseInt(process.env.PORT || '3000', 10);
   const nodeEnv = process.env.NODE_ENV || 'development';
 
-  // Database path - resolve relative to project root
-  const databasePath = path.resolve(
-    process.cwd(),
-    process.env.DATABASE_PATH || 'secureai.db'
-  );
+  const postgresUrl = process.env.POSTGRES_URL;
+
+  if (nodeEnv === 'production' && !postgresUrl) {
+    console.warn('[Config] ⚠️ POSTGRES_URL is not set in production. Database will fall back to In-Memory Mock Mode.');
+  }
 
   // Audit signing key - generate a default for dev, warn loudly in production
   let auditSigningKey: Buffer;
@@ -78,7 +78,7 @@ function loadConfig(): AppConfig {
   return {
     port,
     nodeEnv,
-    databasePath,
+    postgresUrl,
     auditSigningKey,
     sendgridApiKey: sendgridApiKey?.startsWith('SG.your_') ? undefined : sendgridApiKey,
     sandbox: { memoryLimit, timeout },

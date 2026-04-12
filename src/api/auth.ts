@@ -15,7 +15,7 @@ export interface AuthRequest extends Request {
 }
 
 // Shared database instance
-const db = new PermissionDB(config.databasePath);
+const db = new PermissionDB(config.postgresUrl);
 export { db as authDb };
 
 /**

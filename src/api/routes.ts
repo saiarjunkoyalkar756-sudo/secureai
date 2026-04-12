@@ -17,7 +17,7 @@ import * as crypto from 'crypto';
 // --- SERVICES ---
 const db = authDb;
 const emailService = new EmailService();
-const auditLogger = new AuditLogger(config.databasePath.replace('.db', '-audit.db'), config.auditSigningKey);
+const auditLogger = new AuditLogger(config.postgresUrl, config.auditSigningKey);
 const rateLimiter = new RateLimiter(config.rateLimiting.windowMs, config.rateLimiting.maxRequests);
 
 // Fine-grained per-route limits (applied per org once auth runs)
@@ -50,16 +50,16 @@ app.use('/v1/auth',        rateLimiter.middleware());
 app.use(hipaaMiddleware());
 
 // --- HEALTH CHECK ---
-app.get('/health', (_req, res) => {
+app.get('/health', async (_req, res) => {
   const uptime = process.uptime();
   res.json({
     status: 'healthy',
     version: config.version,
     uptime: `${Math.floor(uptime / 60)}m ${Math.floor(uptime % 60)}s`,
     environment: config.nodeEnv,
-    database: db.isHealthy() ? 'connected' : 'disconnected',
-    stats: db.getStats(),
-    audit: { entries: auditLogger.getEntryCount() },
+    database: (await db.isHealthy()) ? 'connected' : 'disconnected',
+    stats: await db.getStats(),
+    audit: { entries: await auditLogger.getEntryCount() },
     hipaaMode: isHIPAAEnabled()
   });
 });
@@ -119,7 +119,7 @@ app.post('/v1/execute', authenticateApiKey, rateLimiter.middleware(), async (req
         riskScore: permissionCheck.analysis.riskScore, // store real score
       };
 
-      db.createApprovalRequest(approvalReq);
+      await db.createApprovalRequest(approvalReq);
       await emailService.sendApprovalRequest(approvalReq, 'admin@secureai.io');
 
       return res.status(202).json({
@@ -171,9 +171,9 @@ app.post('/v1/execute', authenticateApiKey, rateLimiter.middleware(), async (req
  * GET /v1/approvals/:id
  * Poll the status of a pending approval request.
  */
-app.get('/v1/approvals/:id', authenticateApiKey, rateLimiter.middleware(), (req: AuthRequest, res: Response) => {
+app.get('/v1/approvals/:id', authenticateApiKey, rateLimiter.middleware(), async (req: AuthRequest, res: Response) => {
   try {
-    const approval = db.getApprovalRequest(req.params.id);
+    const approval = await db.getApprovalRequest(req.params.id);
     if (!approval) return res.status(404).json({ error: 'Not found' });
 
     if (approval.requestedBy !== req.user!.id && req.user!.role !== 'admin') {
@@ -201,7 +201,7 @@ app.get('/v1/approvals/:id', authenticateApiKey, rateLimiter.middleware(), (req:
  */
 app.post('/v1/approvals/:id/approve', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin', 'approver']), async (req: AuthRequest, res: Response) => {
   try {
-    const approval = db.getApprovalRequest(req.params.id);
+    const approval = await db.getApprovalRequest(req.params.id);
     if (!approval) return res.status(404).json({ error: 'Not found' });
 
     if (approval.status !== 'pending') {
@@ -210,14 +210,14 @@ app.post('/v1/approvals/:id/approve', authenticateApiKey, rateLimiter.middleware
 
     console.log(`[Admin] ✅ Approval granted: ${req.params.id} by ${req.user!.email}`);
 
-    db.updateApprovalStatus(req.params.id, 'approved', req.user!.id);
+    await db.updateApprovalStatus(req.params.id, 'approved', req.user!.id);
     await auditLogger.logApproval(req.params.id, approval.executionId, req.user!.id);
 
     // Notify requester
-    const requester = db.getUserById(approval.requestedBy);
+    const requester = await db.getUserById(approval.requestedBy);
     if (requester) {
       await emailService.notifyExecutionStatus(
-        db.getApprovalRequest(req.params.id)!,
+        (await db.getApprovalRequest(req.params.id))!,
         requester.email
       );
     }
@@ -257,7 +257,7 @@ app.post('/v1/approvals/:id/approve', authenticateApiKey, rateLimiter.middleware
  */
 app.post('/v1/approvals/:id/reject', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin', 'approver']), async (req: AuthRequest, res: Response) => {
   try {
-    const approval = db.getApprovalRequest(req.params.id);
+    const approval = await db.getApprovalRequest(req.params.id);
     if (!approval) return res.status(404).json({ error: 'Not found' });
 
     if (approval.status !== 'pending') {
@@ -267,14 +267,14 @@ app.post('/v1/approvals/:id/reject', authenticateApiKey, rateLimiter.middleware(
     const reason = req.body.reason || 'No reason provided';
     console.log(`[Admin] ❌ Rejection for: ${req.params.id} by ${req.user!.email}. Reason: ${reason}`);
 
-    db.updateApprovalStatus(req.params.id, 'rejected', req.user!.id, reason);
+    await db.updateApprovalStatus(req.params.id, 'rejected', req.user!.id, reason);
     await auditLogger.logRejection(req.params.id, approval.executionId, req.user!.id, reason);
 
     // Notify requester
-    const requester = db.getUserById(approval.requestedBy);
+    const requester = await db.getUserById(approval.requestedBy);
     if (requester) {
       await emailService.notifyExecutionStatus(
-        db.getApprovalRequest(req.params.id)!,
+        (await db.getApprovalRequest(req.params.id))!,
         requester.email
       );
     }
@@ -294,9 +294,9 @@ app.post('/v1/approvals/:id/reject', authenticateApiKey, rateLimiter.middleware(
  * GET /v1/permissions
  * List all configured permissions.
  */
-app.get('/v1/permissions', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), (_req: AuthRequest, res: Response) => {
+app.get('/v1/permissions', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), async (_req: AuthRequest, res: Response) => {
   try {
-    const permissions = db.getAllPermissions();
+    const permissions = await db.getAllPermissions();
     res.json({ permissions, count: permissions.length });
   } catch (err) {
     console.error('[Server] ❌ Permissions list error:', err);
@@ -308,12 +308,12 @@ app.get('/v1/permissions', authenticateApiKey, rateLimiter.middleware(), require
  * GET /v1/audit/integrity
  * Verify the integrity of the audit log chain.
  */
-app.get('/v1/audit/integrity', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), (_req: AuthRequest, res: Response) => {
+app.get('/v1/audit/integrity', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), async (_req: AuthRequest, res: Response) => {
   try {
-    const result = auditLogger.verifyIntegrity();
+    const result = await auditLogger.verifyIntegrity();
     res.json({
       status: result.valid ? 'verified' : 'tampered',
-      totalEntries: auditLogger.getEntryCount(),
+      totalEntries: await auditLogger.getEntryCount(),
       tamperedEntries: result.tamperedIds.length,
       tamperedIds: result.tamperedIds
     });
@@ -327,10 +327,10 @@ app.get('/v1/audit/integrity', authenticateApiKey, rateLimiter.middleware(), req
  * GET /v1/audit/recent
  * Get recent audit log entries.
  */
-app.get('/v1/audit/recent', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), (req: AuthRequest, res: Response) => {
+app.get('/v1/audit/recent', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), async (req: AuthRequest, res: Response) => {
   try {
     const limit = parseInt(req.query.limit as string) || 20;
-    const entries = auditLogger.getRecentEntries(Math.min(limit, 100));
+    const entries = await auditLogger.getRecentEntries(Math.min(limit, 100));
     res.json({ entries, count: entries.length });
   } catch (err) {
     console.error('[Server] ❌ Audit recent error:', err);
@@ -389,20 +389,20 @@ app.post('/v1/analyze', authenticateApiKey, rateLimiter.middleware(), async (req
  * POST /v1/auth/login
  * Validate an API key and return the user info for the frontend dashboard.
  */
-app.post('/v1/auth/login', (req: AuthRequest, res: Response) => {
+app.post('/v1/auth/login', async (req: AuthRequest, res: Response) => {
   try {
     const { apiKey } = req.body;
     if (!apiKey) {
       return res.status(400).json({ error: 'Missing apiKey field' });
     }
 
-    const user = db.getUserByApiKey(apiKey);
+    const user = await db.getUserByApiKeyAsync(apiKey);
     if (!user) {
       return res.status(401).json({ error: 'Invalid or revoked API key' });
     }
 
     // Log the login event
-    auditLogger.log({
+    await auditLogger.log({
       timestamp: new Date(),
       executionId: 'login_' + generateId(),
       userId: user.id,
@@ -430,10 +430,10 @@ app.post('/v1/auth/login', (req: AuthRequest, res: Response) => {
  * GET /v1/approvals
  * List all approval requests (pending by default).
  */
-app.get('/v1/approvals', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin', 'approver']), (req: AuthRequest, res: Response) => {
+app.get('/v1/approvals', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin', 'approver']), async (req: AuthRequest, res: Response) => {
   try {
     const status = (req.query.status as string) || undefined;
-    const approvals = db.listApprovalRequests(status);
+    const approvals = await db.listApprovalRequests(status);
 
     // Transform to frontend-friendly format
     const data = approvals.map((a: any) => ({
@@ -460,7 +460,7 @@ app.get('/v1/approvals', authenticateApiKey, rateLimiter.middleware(), requireRo
  */
 app.post('/v1/approvals/:id/deny', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin', 'approver']), async (req: AuthRequest, res: Response) => {
   try {
-    const approval = db.getApprovalRequest(req.params.id);
+    const approval = await db.getApprovalRequest(req.params.id);
     if (!approval) return res.status(404).json({ error: 'Not found' });
 
     if (approval.status !== 'pending') {
@@ -468,7 +468,7 @@ app.post('/v1/approvals/:id/deny', authenticateApiKey, rateLimiter.middleware(),
     }
 
     const reason = req.body.reason || 'Denied via dashboard';
-    db.updateApprovalStatus(req.params.id, 'rejected', req.user!.id, reason);
+    await db.updateApprovalStatus(req.params.id, 'rejected', req.user!.id, reason);
     await auditLogger.logRejection(req.params.id, approval.executionId, req.user!.id, reason);
 
     res.json({ status: 'denied', message: 'Execution request denied', reason });
@@ -482,9 +482,9 @@ app.post('/v1/approvals/:id/deny', authenticateApiKey, rateLimiter.middleware(),
  * GET /v1/keys
  * List API keys for the authenticated user's organization.
  */
-app.get('/v1/keys', authenticateApiKey, rateLimiter.middleware(), (req: AuthRequest, res: Response) => {
+app.get('/v1/keys', authenticateApiKey, rateLimiter.middleware(), async (req: AuthRequest, res: Response) => {
   try {
-    const keys = db.getApiKeysByOrg(req.user!.organizationId);
+    const keys = await db.getApiKeysByOrg(req.user!.organizationId);
     const data = keys.map((k: any) => ({
       id: k.id,
       name: k.name || k.id,
@@ -517,7 +517,7 @@ app.post('/v1/keys', authenticateApiKey, rateLimiter.middleware(), requireRole([
     // createApiKey is now async (bcrypt hashing)
     await db.createApiKey(keyId, req.user!.id, rawKey, req.user!.organizationId, { name, expiresAt });
 
-    auditLogger.log({
+    await auditLogger.log({
       timestamp: new Date(),
       executionId: keyId,
       userId: req.user!.id,
@@ -549,11 +549,11 @@ app.post('/v1/keys', authenticateApiKey, rateLimiter.middleware(), requireRole([
  * POST /v1/keys/:id/revoke
  * Revoke an API key.
  */
-app.post('/v1/keys/:id/revoke', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), (req: AuthRequest, res: Response) => {
+app.post('/v1/keys/:id/revoke', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), async (req: AuthRequest, res: Response) => {
   try {
-    db.revokeApiKey(req.params.id);
+    await db.revokeApiKey(req.params.id);
 
-    auditLogger.log({
+    await auditLogger.log({
       timestamp: new Date(),
       executionId: req.params.id,
       userId: req.user!.id,
@@ -574,16 +574,16 @@ app.post('/v1/keys/:id/revoke', authenticateApiKey, rateLimiter.middleware(), re
  * GET /v1/org/stats
  * Get organization overview statistics for the dashboard.
  */
-app.get('/v1/org/stats', authenticateApiKey, rateLimiter.middleware(), (req: AuthRequest, res: Response) => {
+app.get('/v1/org/stats', authenticateApiKey, rateLimiter.middleware(), async (req: AuthRequest, res: Response) => {
   try {
-    const dbStats = db.getStats();
-    const auditCount = auditLogger.getEntryCount();
-    const allEntries = auditLogger.getRecentEntries(1000); // scan for aggregates
+    const dbStats = await db.getStats();
+    const auditCount = await auditLogger.getEntryCount();
+    const allEntries = await auditLogger.getRecentEntries(1000); // scan for aggregates
     const executions = allEntries.filter((e: any) => e.action?.includes('execution') || e.action?.includes('sandboxed')).length;
     const blocked    = allEntries.filter((e: any) => e.action?.includes('blocked') || e.action?.includes('threat')).length;
-    const keys = db.getApiKeysByOrg(req.user!.organizationId);
+    const keys = await db.getApiKeysByOrg(req.user!.organizationId);
     const activeKeys = keys.filter((k: any) => k.status === 'active').length;
-    const pendingApprovals = db.listApprovalRequests('pending');
+    const pendingApprovals = await db.listApprovalRequests('pending');
 
     res.json({
       data: {
@@ -608,10 +608,10 @@ app.get('/v1/org/stats', authenticateApiKey, rateLimiter.middleware(), (req: Aut
  * GET /v1/audit-logs
  * Alias for /v1/audit/recent — used by the frontend dashboard.
  */
-app.get('/v1/audit-logs', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), (req: AuthRequest, res: Response) => {
+app.get('/v1/audit-logs', authenticateApiKey, rateLimiter.middleware(), requireRole(['admin']), async (req: AuthRequest, res: Response) => {
   try {
     const limit = parseInt(req.query.limit as string) || 50;
-    const entries = auditLogger.getRecentEntries(Math.min(limit, 100));
+    const entries = await auditLogger.getRecentEntries(Math.min(limit, 100));
 
     // Transform audit entries to frontend-friendly format
     const data = entries.map((e: any) => {
@@ -661,7 +661,7 @@ app.post('/v1/setup', async (req: AuthRequest, res: Response) => {
     }
 
     // Refuse if DB already has users — this is a one-time operation
-    const stats = db.getStats();
+    const stats = await db.getStats();
     if (stats.users > 0) {
       return res.status(409).json({
         error: 'Database already seeded',
@@ -677,12 +677,12 @@ app.post('/v1/setup', async (req: AuthRequest, res: Response) => {
     const email   = req.body.email || 'admin@secureai.io';
 
     // Create org admin user
-    db.createUser({ id: userId, email, organizationId: orgId, role: 'admin' });
+    await db.createUser({ id: userId, email, organizationId: orgId, role: 'admin' });
 
     // Create API key (bcrypt-hashed, takes ~100ms)
     await db.createApiKey(keyId, userId, rawKey, orgId, { name: 'Admin Key (Production)' });
 
-    auditLogger.log({
+    await auditLogger.log({
       timestamp: new Date(),
       executionId: 'setup_' + generateId(),
       userId,

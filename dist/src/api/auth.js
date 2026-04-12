@@ -4,7 +4,7 @@ exports.requireRole = exports.authenticateApiKey = exports.authDb = void 0;
 const db_1 = require("../core/permissions/db");
 const config_1 = require("../config");
 // Shared database instance
-const db = new db_1.PermissionDB(config_1.config.databasePath);
+const db = new db_1.PermissionDB(config_1.config.postgresUrl);
 exports.authDb = db;
 /**
  * Middleware to authenticate via API Key in Bearer token.

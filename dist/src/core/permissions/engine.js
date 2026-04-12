@@ -56,7 +56,7 @@ class PermissionEngine {
         const requiredPermissions = this.inferPermissions(analysis);
         const results = await Promise.all(requiredPermissions.map(async (perm) => {
             try {
-                const allowed = this.permissionsDb.prepare(`SELECT * FROM permissions WHERE resource = ? AND type = ? AND action = 'allow'`).all(perm.resource, perm.type);
+                const allowed = await this.permissionsDb.query(`SELECT * FROM permissions WHERE resource = $1 AND type = $2 AND action = 'allow'`, [perm.resource, perm.type]);
                 if (allowed.length === 0) {
                     return {
                         permission: perm,

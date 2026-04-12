@@ -36,14 +36,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.PermissionDB = void 0;
 const crypto = __importStar(require("crypto"));
 const bcrypt = __importStar(require("bcryptjs"));
-const BCRYPT_ROUNDS = 10; // ~100ms on modern hardware — slow enough to resist brute force
-/**
- * PermissionDB — Persistent database layer for the SecureAI platform.
- * Supports both real SQLite (via better-sqlite3) and an in-memory mock fallback.
- * API keys are stored as SHA-256 hashes for security.
- */
+const pg_1 = require("pg");
+const BCRYPT_ROUNDS = 10;
 class PermissionDB {
-    db;
+    pool = null;
     isMock = false;
     mockStore = {
         permissions: new Map(),
@@ -52,221 +48,189 @@ class PermissionDB {
         api_keys: new Map(),
         user_policies: new Map()
     };
-    constructor(dbPath = 'secureai.db') {
+    constructor(postgresUrl) {
+        if (postgresUrl) {
+            try {
+                this.pool = new pg_1.Pool({
+                    connectionString: postgresUrl,
+                    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined
+                });
+                console.log(`[Database] ✅ Using persistent Postgres database`);
+                this.initializeDatabase();
+            }
+            catch (err) {
+                console.warn(`[Database] ⚠ Failed to connect to Postgres. Falling back to IN-MEMORY MOCK MODE.`);
+                this.isMock = true;
+                this.initMockStore();
+            }
+        }
+        else {
+            console.warn(`[Database] ⚠ No POSTGRES_URL provided. Falling back to IN-MEMORY MOCK MODE.`);
+            this.isMock = true;
+            this.initMockStore();
+        }
+    }
+    initMockStore() {
+        const adminId = 'user_admin_static';
+        const orgId = 'org_5977a082-1e0';
+        const keyId = 'key_static_01';
+        const keyPrefix = 'sk_live_3569';
+        const keyHash = '8b843e028e54d214292a197f1d436ff1e84a341977e9d9c0f26fa950a864e947';
+        const keySecret = '$2b$10$RjzXmUCkpmmq94D.nhlBM.YPzWWLRSdOUOhtv1r4RD2C9wAFggJgq';
+        this.mockStore.users.set(adminId, {
+            id: adminId, email: 'admin@secureai.io', organizationId: orgId, role: 'admin'
+        });
+        this.mockStore.api_keys.set(keyId, {
+            id: keyId, keyHash, keySecret, keyPrefix, name: 'Vercel Permanent Admin Key',
+            userId: adminId, organizationId: orgId, status: 'active'
+        });
+        console.log('[Database] ✅ Auto-seeded In-Memory Mock Admin API Key');
+    }
+    async initializeDatabase() {
+        if (this.isMock || !this.pool)
+            return;
         try {
-            const Database = require('better-sqlite3');
-            this.db = new Database(dbPath);
-            this.db.pragma('journal_mode = WAL'); // Better concurrent access
-            this.initializeDatabase();
-            console.log(`[Database] ✅ Using persistent SQLite at ${dbPath}`);
+            await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS permissions (
+          id TEXT PRIMARY KEY,
+          type TEXT NOT NULL,
+          resource TEXT NOT NULL,
+          action TEXT NOT NULL,
+          requiresApproval INTEGER DEFAULT 1,
+          maxDataSize INTEGER,
+          maxExecutionTime INTEGER,
+          expiresAt TEXT,
+          createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          createdBy TEXT,
+          organizationId TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS approval_requests (
+          id TEXT PRIMARY KEY,
+          executionId TEXT NOT NULL,
+          permissions TEXT NOT NULL,
+          status TEXT DEFAULT 'pending',
+          requestedBy TEXT NOT NULL,
+          approvedBy TEXT,
+          reason TEXT,
+          createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          expiresAt TEXT,
+          approvalTime TEXT,
+          code TEXT,
+          language TEXT,
+          riskScore INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS user_policies (
+          id TEXT PRIMARY KEY,
+          userId TEXT NOT NULL,
+          permissionId TEXT NOT NULL,
+          organizationId TEXT,
+          createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY(permissionId) REFERENCES permissions(id),
+          UNIQUE(userId, permissionId)
+        );
+
+        CREATE TABLE IF NOT EXISTS users (
+          id TEXT PRIMARY KEY,
+          email TEXT UNIQUE NOT NULL,
+          organizationId TEXT,
+          role TEXT DEFAULT 'executor',
+          createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS api_keys (
+          id TEXT PRIMARY KEY,
+          keyHash TEXT NOT NULL,
+          keySecret TEXT,
+          keyPrefix TEXT NOT NULL,
+          name TEXT,
+          userId TEXT NOT NULL,
+          organizationId TEXT,
+          status TEXT DEFAULT 'active',
+          expiresAt TEXT,
+          lastUsedAt TEXT,
+          createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY(userId) REFERENCES users(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_perm_resource ON permissions(resource);
+        CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(status);
+        CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(keyHash);
+      `);
+            // Auto-seed for stateless environments
+            const { rows } = await this.pool.query('SELECT COUNT(*) as count FROM api_keys');
+            if (parseInt(rows[0].count) === 0) {
+                console.log('[Database] ⚠️ Empty database detected. Auto-seeding static Admin...');
+                const adminId = 'user_admin_static';
+                const orgId = 'org_5977a082-1e0';
+                const keyId = 'key_static_01';
+                const keyPrefix = 'sk_live_3569';
+                const keyHash = '8b843e028e54d214292a197f1d436ff1e84a341977e9d9c0f26fa950a864e947';
+                const keySecret = '$2b$10$RjzXmUCkpmmq94D.nhlBM.YPzWWLRSdOUOhtv1r4RD2C9wAFggJgq';
+                await this.pool.query(`
+          INSERT INTO users (id, email, organizationId, role) 
+          VALUES ($1, $2, $3, $4) 
+          ON CONFLICT (id) DO NOTHING
+        `, [adminId, 'admin@secureai.io', orgId, 'admin']);
+                await this.pool.query(`
+          INSERT INTO api_keys (id, keyHash, keySecret, keyPrefix, name, userId, organizationId) 
+          VALUES ($1, $2, $3, $4, $5, $6, $7) 
+          ON CONFLICT (id) DO NOTHING
+        `, [keyId, keyHash, keySecret, keyPrefix, 'Permanent Admin Key', adminId, orgId]);
+                console.log('[Database] ✅ Auto-seeded Admin API Key');
+            }
         }
         catch (err) {
-            console.warn(`[Database] ⚠ Failed to load better-sqlite3. Falling back to IN-MEMORY MOCK MODE.`);
-            console.warn(`[Database] Note: Data will NOT persist after server restart.`);
-            this.isMock = true;
-            // Auto-seed for Vercel Serverless (which runs in mock mode due to better-sqlite3 native binary mismatch)
-            const adminId = 'user_admin_static';
-            const orgId = 'org_5977a082-1e0';
-            const keyId = 'key_static_01';
-            const keyPrefix = 'sk_live_3569';
-            const keyHash = '8b843e028e54d214292a197f1d436ff1e84a341977e9d9c0f26fa950a864e947';
-            const keySecret = '$2b$10$RjzXmUCkpmmq94D.nhlBM.YPzWWLRSdOUOhtv1r4RD2C9wAFggJgq';
-            this.mockStore.users.set(adminId, {
-                id: adminId, email: 'admin@secureai.io', organizationId: orgId, role: 'admin'
-            });
-            this.mockStore.api_keys.set(keyId, {
-                id: keyId, keyHash, keySecret, keyPrefix, name: 'Vercel Permanent Admin Key',
-                userId: adminId, organizationId: orgId, status: 'active'
-            });
-            console.log('[Database] ✅ Auto-seeded In-Memory Mock Admin API Key');
+            console.error('[Database] Failed to initialize DB schema:', err);
         }
     }
-    initializeDatabase() {
-        if (this.isMock)
-            return;
-        this.db.exec(`
-      CREATE TABLE IF NOT EXISTS permissions (
-        id TEXT PRIMARY KEY,
-        type TEXT NOT NULL,
-        resource TEXT NOT NULL,
-        action TEXT NOT NULL,
-        requiresApproval INTEGER DEFAULT 1,
-        maxDataSize INTEGER,
-        maxExecutionTime INTEGER,
-        expiresAt TEXT,
-        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-        createdBy TEXT,
-        organizationId TEXT
-      );
-
-      CREATE TABLE IF NOT EXISTS approval_requests (
-        id TEXT PRIMARY KEY,
-        executionId TEXT NOT NULL,
-        permissions TEXT NOT NULL, -- JSON array
-        status TEXT DEFAULT 'pending', -- pending, approved, rejected, expired
-        requestedBy TEXT NOT NULL,
-        approvedBy TEXT,
-        reason TEXT,
-        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-        expiresAt TEXT,
-        approvalTime TEXT,
-        code TEXT,
-        language TEXT,
-        riskScore INTEGER DEFAULT 0
-      );
-
-      CREATE TABLE IF NOT EXISTS user_policies (
-        id TEXT PRIMARY KEY,
-        userId TEXT NOT NULL,
-        permissionId TEXT NOT NULL,
-        organizationId TEXT,
-        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(permissionId) REFERENCES permissions(id),
-        UNIQUE(userId, permissionId)
-      );
-
-      CREATE TABLE IF NOT EXISTS users (
-        id TEXT PRIMARY KEY,
-        email TEXT UNIQUE NOT NULL,
-        organizationId TEXT,
-        role TEXT DEFAULT 'executor', -- admin, executor, approver
-        createdAt TEXT DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE TABLE IF NOT EXISTS api_keys (
-        id TEXT PRIMARY KEY,
-        keyHash TEXT NOT NULL,        -- SHA-256 of raw key (fast index lookup)
-        keySecret TEXT,               -- bcrypt hash of raw key (brute-force resistant verification)
-        keyPrefix TEXT NOT NULL,      -- first 12 chars shown in UI
-        name TEXT,                    -- human-readable label
-        userId TEXT NOT NULL,
-        organizationId TEXT,
-        status TEXT DEFAULT 'active', -- active, revoked, expired
-        expiresAt TEXT,               -- ISO timestamp, NULL = never expires
-        lastUsedAt TEXT,              -- updated on every successful auth
-        createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(userId) REFERENCES users(id)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_perm_resource ON permissions(resource);
-      CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(status);
-      CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(keyHash);
-    `);
-        // Migration: add new columns if they don't exist (non-destructive ALTER TABLE)
-        try {
-            const columns = this.db.pragma('table_info(api_keys)');
-            const colNames = columns.map((c) => c.name);
-            // Old plaintext 'key' column → migrate to hashed storage
-            if (colNames.includes('key') && !colNames.includes('keyHash')) {
-                console.log('[Database] 🔄 Migrating api_keys: plaintext → SHA-256 hash...');
-                const rows = this.db.prepare('SELECT id, key, userId, organizationId, status FROM api_keys').all();
-                this.db.exec('DROP TABLE IF EXISTS api_keys');
-                this.db.exec(`
-          CREATE TABLE api_keys (
-            id TEXT PRIMARY KEY,
-            keyHash TEXT NOT NULL,
-            keySecret TEXT,
-            keyPrefix TEXT NOT NULL,
-            name TEXT,
-            userId TEXT NOT NULL,
-            organizationId TEXT,
-            status TEXT DEFAULT 'active',
-            expiresAt TEXT,
-            lastUsedAt TEXT,
-            createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(userId) REFERENCES users(id)
-          );
-          CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(keyHash);
-        `);
-                const insertStmt = this.db.prepare('INSERT INTO api_keys (id, keyHash, keyPrefix, userId, organizationId, status) VALUES (?, ?, ?, ?, ?, ?)');
-                for (const row of rows) {
-                    insertStmt.run(row.id, PermissionDB.hashApiKey(row.key), row.key.substring(0, 12), row.userId, row.organizationId, row.status);
-                }
-                console.log(`[Database] ✅ Migrated ${rows.length} API key(s) to hashed storage.`);
-            }
-            // Add new columns to existing hashed-key tables (safe to run repeatedly)
-            const addColIfMissing = (col, def) => {
-                if (!colNames.includes(col)) {
-                    this.db.exec(`ALTER TABLE api_keys ADD COLUMN ${col} ${def}`);
-                    console.log(`[Database] 🔄 Added column api_keys.${col}`);
-                }
-            };
-            addColIfMissing('keySecret', 'TEXT');
-            addColIfMissing('name', 'TEXT');
-            addColIfMissing('expiresAt', 'TEXT');
-            addColIfMissing('lastUsedAt', 'TEXT');
-            // Migrate approval_requests to add riskScore if missing
-            try {
-                const approvalCols = this.db.pragma('table_info(approval_requests)');
-                const approvalColNames = approvalCols.map((c) => c.name);
-                if (!approvalColNames.includes('riskScore')) {
-                    this.db.exec('ALTER TABLE approval_requests ADD COLUMN riskScore INTEGER DEFAULT 0');
-                    console.log('[Database] 🔄 Added column approval_requests.riskScore');
-                }
-            }
-            catch (_) { /* table may not exist yet */ }
-        }
-        catch (_) {
-            // Table might not exist yet — that's fine, schema was just created
-        }
-        // Auto-seed for Vercel/Serverless stateless environments 
-        // Always insert the default admin user and key if none exists
-        const keyCount = this.db.prepare('SELECT COUNT(*) as count FROM api_keys').get();
-        if (keyCount.count === 0) {
-            console.log('[Database] ⚠️ Empty database detected. Auto-seeding static Vercel Admin...');
-            const adminId = 'user_admin_static';
-            const orgId = 'org_5977a082-1e0';
-            const keyId = 'key_static_01';
-            const keyPrefix = 'sk_live_3569';
-            const keyHash = '8b843e028e54d214292a197f1d436ff1e84a341977e9d9c0f26fa950a864e947';
-            const keySecret = '$2b$10$RjzXmUCkpmmq94D.nhlBM.YPzWWLRSdOUOhtv1r4RD2C9wAFggJgq';
-            this.db.prepare('INSERT OR IGNORE INTO users (id, email, organizationId, role) VALUES (?, ?, ?, ?)').run(adminId, 'admin@secureai.io', orgId, 'admin');
-            this.db.prepare('INSERT OR IGNORE INTO api_keys (id, keyHash, keySecret, keyPrefix, name, userId, organizationId) VALUES (?, ?, ?, ?, ?, ?, ?)').run(keyId, keyHash, keySecret, keyPrefix, 'Vercel Permanent Admin Key', adminId, orgId);
-            console.log('[Database] ✅ Auto-seeded Vercel Admin API Key');
-        }
-    }
-    // --- Static Helpers ---
-    /** SHA-256 hash used as the DB index (fast equality lookup) */
     static hashApiKey(rawKey) {
         return crypto.createHash('sha256').update(rawKey).digest('hex');
     }
-    /** bcrypt hash used for slow, brute-force-resistant verification */
     static async bcryptApiKey(rawKey) {
         return bcrypt.hash(rawKey, BCRYPT_ROUNDS);
     }
     static async verifyApiKey(rawKey, bcryptHash) {
         return bcrypt.compare(rawKey, bcryptHash);
     }
-    // --- Permission Methods ---
-    addPermission(permission) {
+    async addPermission(permission) {
         if (this.isMock) {
             this.mockStore.permissions.set(permission.id, { ...permission });
             return;
         }
-        const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO permissions (
+        await this.pool.query(`
+      INSERT INTO permissions (
         id, type, resource, action, requiresApproval, 
         maxDataSize, maxExecutionTime, expiresAt, createdBy, organizationId
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-        stmt.run(permission.id, permission.type, permission.resource, permission.action, permission.requiresApproval ? 1 : 0, permission.conditions?.maxDataSize || null, permission.conditions?.maxExecutionTime || null, permission.conditions?.expiresAt || null, permission.createdBy, permission.organizationId || null);
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      ON CONFLICT (id) DO UPDATE SET
+        type = EXCLUDED.type, resource = EXCLUDED.resource, action = EXCLUDED.action,
+        requiresApproval = EXCLUDED.requiresApproval, maxDataSize = EXCLUDED.maxDataSize,
+        maxExecutionTime = EXCLUDED.maxExecutionTime, expiresAt = EXCLUDED.expiresAt
+    `, [
+            permission.id, permission.type, permission.resource, permission.action,
+            permission.requiresApproval ? 1 : 0, permission.conditions?.maxDataSize || null,
+            permission.conditions?.maxExecutionTime || null, permission.conditions?.expiresAt || null,
+            permission.createdBy, permission.organizationId || null
+        ]);
     }
-    getPermission(id) {
+    async getPermission(id) {
         if (this.isMock) {
             const p = this.mockStore.permissions.get(id);
             return p ? this.mapPermissionRow(p) : null;
         }
-        const row = this.db.prepare('SELECT * FROM permissions WHERE id = ?').get(id);
-        return row ? this.mapPermissionRow(row) : null;
+        const { rows } = await this.pool.query('SELECT * FROM permissions WHERE id = $1', [id]);
+        return Math.max(0, rows.length) ? this.mapPermissionRow(rows[0]) : null;
     }
-    getAllPermissions() {
+    async getAllPermissions() {
         if (this.isMock) {
             return Array.from(this.mockStore.permissions.values()).map((r) => this.mapPermissionRow(r));
         }
-        const rows = this.db.prepare('SELECT * FROM permissions ORDER BY createdAt DESC').all();
-        return rows.map(this.mapPermissionRow);
+        const { rows } = await this.pool.query('SELECT * FROM permissions ORDER BY createdAt DESC');
+        return rows.map(r => this.mapPermissionRow(r));
     }
-    queryPermissions(filters) {
+    async queryPermissions(filters) {
         if (this.isMock) {
             let results = Array.from(this.mockStore.permissions.values());
             if (filters.type)
@@ -278,18 +242,17 @@ class PermissionDB {
         let sql = 'SELECT * FROM permissions WHERE 1=1';
         const params = [];
         if (filters.type) {
-            sql += ' AND type = ?';
             params.push(filters.type);
+            sql += ` AND type = $${params.length}`;
         }
         if (filters.resource) {
-            sql += ' AND resource LIKE ?';
             params.push(`%${filters.resource}%`);
+            sql += ` AND resource LIKE $${params.length}`;
         }
-        const rows = this.db.prepare(sql).all(...params);
-        return rows.map(this.mapPermissionRow);
+        const { rows } = await this.pool.query(sql, params);
+        return rows.map(r => this.mapPermissionRow(r));
     }
-    // --- Approval Request Methods ---
-    createApprovalRequest(req) {
+    async createApprovalRequest(req) {
         if (this.isMock) {
             this.mockStore.approval_requests.set(req.id, {
                 ...req,
@@ -299,39 +262,30 @@ class PermissionDB {
             });
             return req.id;
         }
-        const stmt = this.db.prepare(`
+        await this.pool.query(`
       INSERT INTO approval_requests (
         id, executionId, permissions, status, requestedBy, expiresAt, createdAt, code, language, riskScore
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-        stmt.run(req.id, req.executionId, JSON.stringify(req.requestedPermissions), req.status, req.requestedBy, req.expiresAt.toISOString(), req.createdAt.toISOString(), req.code || null, req.language || null, req.riskScore ?? 0);
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `, [
+            req.id, req.executionId, JSON.stringify(req.requestedPermissions), req.status,
+            req.requestedBy, req.expiresAt.toISOString(), req.createdAt.toISOString(),
+            req.code || null, req.language || null, req.riskScore ?? 0
+        ]);
         return req.id;
     }
-    getApprovalRequest(id) {
+    async getApprovalRequest(id) {
         if (this.isMock) {
             const row = this.mockStore.approval_requests.get(id);
             if (!row)
                 return null;
-            return {
-                ...row,
-                requestedPermissions: typeof row.permissions === 'string' ? JSON.parse(row.permissions) : row.requestedPermissions,
-                expiresAt: new Date(row.expiresAt),
-                createdAt: new Date(row.createdAt),
-                approvalTime: row.approvalTime ? new Date(row.approvalTime) : undefined
-            };
+            return this.mapApprovalRow(row);
         }
-        const row = this.db.prepare('SELECT * FROM approval_requests WHERE id = ?').get(id);
-        if (!row)
+        const { rows } = await this.pool.query('SELECT * FROM approval_requests WHERE id = $1', [id]);
+        if (!rows.length)
             return null;
-        return {
-            ...row,
-            requestedPermissions: JSON.parse(row.permissions),
-            expiresAt: new Date(row.expiresAt),
-            createdAt: new Date(row.createdAt),
-            approvalTime: row.approvalTime ? new Date(row.approvalTime) : undefined
-        };
+        return this.mapApprovalRow(rows[0]);
     }
-    updateApprovalStatus(id, status, approverId, reason) {
+    async updateApprovalStatus(id, status, approverId, reason) {
         if (this.isMock) {
             const req = this.mockStore.approval_requests.get(id);
             if (req) {
@@ -339,117 +293,43 @@ class PermissionDB {
             }
             return;
         }
-        const stmt = this.db.prepare(`UPDATE approval_requests SET status = ?, approvedBy = ?, reason = ?, approvalTime = ? WHERE id = ?`);
-        stmt.run(status, approverId, reason || null, new Date().toISOString(), id);
+        await this.pool.query(`UPDATE approval_requests SET status = $1, approvedBy = $2, reason = $3, approvalTime = $4 WHERE id = $5`, [status, approverId, reason || null, new Date().toISOString(), id]);
     }
-    /**
-     * List approval requests, optionally filtered by status.
-     */
-    listApprovalRequests(status) {
+    async listApprovalRequests(status) {
         if (this.isMock) {
             let results = Array.from(this.mockStore.approval_requests.values());
             if (status)
                 results = results.filter((r) => r.status === status);
-            return results.map((r) => ({
-                id: r.id,
-                executionId: r.executionId,
-                status: r.status,
-                requestedBy: r.requestedBy || r.requestedBy,
-                createdAt: r.createdAt,
-                expiresAt: r.expiresAt,
-                code: r.code,
-                language: r.language,
-            }));
+            return results.map(this.mapApprovalRowLite);
         }
         let sql = 'SELECT * FROM approval_requests';
         const params = [];
         if (status) {
-            sql += ' WHERE status = ?';
             params.push(status);
+            sql += ' WHERE status = $1';
         }
         sql += ' ORDER BY createdAt DESC LIMIT 100';
-        return this.db.prepare(sql).all(...params);
+        const { rows } = await this.pool.query(sql, params);
+        return rows.map(r => this.mapApprovalRowLite(r));
     }
-    /**
-     * Get all API keys for a specific user or organization.
-     */
-    getApiKeysByUser(userId) {
+    async getApiKeysByUser(userId) {
         if (this.isMock) {
             return Array.from(this.mockStore.api_keys.values())
                 .filter((k) => k.userId === userId)
-                .map((k) => ({
-                id: k.id,
-                keyPrefix: k.keyPrefix,
-                name: k.name || k.id,
-                status: k.status,
-                organizationId: k.organizationId,
-                createdAt: k.createdAt || new Date().toISOString(),
-            }));
+                .map(this.mapApiKeyLite);
         }
-        return this.db.prepare('SELECT id, keyPrefix, status, organizationId, createdAt FROM api_keys WHERE userId = ? ORDER BY createdAt DESC').all(userId);
+        const { rows } = await this.pool.query('SELECT id, keyPrefix, status, organizationId, createdAt FROM api_keys WHERE userId = $1 ORDER BY createdAt DESC', [userId]);
+        return rows.map(r => this.mapApiKeyLite({ ...r, keyPrefix: r.keyprefix, organizationId: r.organizationid }));
     }
-    getApiKeysByOrg(organizationId) {
+    async getApiKeysByOrg(organizationId) {
         if (this.isMock) {
             return Array.from(this.mockStore.api_keys.values())
                 .filter((k) => k.organizationId === organizationId)
-                .map((k) => ({
-                id: k.id,
-                keyPrefix: k.keyPrefix,
-                name: k.name || k.id,
-                status: k.status,
-                organizationId: k.organizationId,
-                createdAt: k.createdAt || new Date().toISOString(),
-            }));
+                .map(this.mapApiKeyLite);
         }
-        return this.db.prepare('SELECT id, keyPrefix, status, organizationId, createdAt FROM api_keys WHERE organizationId = ? ORDER BY createdAt DESC').all(organizationId);
+        const { rows } = await this.pool.query('SELECT id, keyPrefix, status, organizationId, createdAt FROM api_keys WHERE organizationId = $1 ORDER BY createdAt DESC', [organizationId]);
+        return rows.map(r => this.mapApiKeyLite({ ...r, keyPrefix: r.keyprefix, organizationId: r.organizationid }));
     }
-    // --- Auth Methods (with hashed API keys) ---
-    getUserByApiKey(rawKey) {
-        const keyHash = PermissionDB.hashApiKey(rawKey);
-        const now = new Date().toISOString();
-        if (this.isMock) {
-            const apiKey = Array.from(this.mockStore.api_keys.values()).find((k) => k.keyHash === keyHash && k.status === 'active'
-                && (!k.expiresAt || k.expiresAt > now));
-            if (!apiKey)
-                return null;
-            // Update lastUsedAt in mock
-            apiKey.lastUsedAt = now;
-            const user = this.mockStore.users.get(apiKey.userId);
-            return user ? { ...user, keyOrgId: apiKey.organizationId } : null;
-        }
-        // Step 1: fast SHA-256 index lookup
-        const row = this.db.prepare(`SELECT u.*, k.organizationId as keyOrgId, k.keySecret, k.id as keyId
-       FROM users u JOIN api_keys k ON u.id = k.userId
-       WHERE k.keyHash = ? AND k.status = 'active'`).get(keyHash);
-        if (!row)
-            return null;
-        // Expiry check
-        if (row.expiresAt && row.expiresAt < now)
-            return null;
-        // Step 2: bcrypt verification (sync — kept for backward compat in tests)
-        if (row.keySecret) {
-            const valid = bcrypt.compareSync(rawKey, row.keySecret);
-            if (!valid)
-                return null;
-        }
-        // Step 3: update lastUsedAt (non-blocking, best-effort)
-        try {
-            this.db.prepare('UPDATE api_keys SET lastUsedAt = ? WHERE id = ?').run(now, row.keyId);
-        }
-        catch { /* ignore */ }
-        return row;
-    }
-    /**
-     * Async version used by authenticateApiKey middleware.
-     *
-     * Returns:
-     *   - user row    → valid, active key
-     *   - 'expired'   → key exists and was valid, but expiresAt has passed
-     *   - null        → key not found, revoked, or bcrypt mismatch
-     *
-     * Uses await bcrypt.compare() to avoid blocking the event loop for ~100ms
-     * during the bcrypt verification step.
-     */
     async getUserByApiKeyAsync(rawKey) {
         const keyHash = PermissionDB.hashApiKey(rawKey);
         const now = new Date().toISOString();
@@ -463,45 +343,47 @@ class PermissionDB {
             const user = this.mockStore.users.get(apiKey.userId);
             return user ? { ...user, keyOrgId: apiKey.organizationId } : null;
         }
-        // Step 1: SHA-256 fast index lookup — includes revoked check, excludes expiry
-        // so we can return 'expired' instead of null for expired-but-valid keys.
-        const row = this.db.prepare(`SELECT u.*, k.organizationId as keyOrgId, k.keySecret, k.id as keyId, k.expiresAt as keyExpiresAt
-       FROM users u JOIN api_keys k ON u.id = k.userId
-       WHERE k.keyHash = ? AND k.status = 'active'`).get(keyHash);
-        if (!row)
+        const { rows } = await this.pool.query(`
+      SELECT u.*, k.organizationId as keyOrgId, k.keySecret, k.id as keyId, k.expiresAt as keyExpiresAt
+      FROM users u JOIN api_keys k ON u.id = k.userId
+      WHERE k.keyHash = $1 AND k.status = 'active'
+    `, [keyHash]);
+        if (!rows.length)
             return null;
-        // Step 2: expiry check — return distinct sentinel for expired keys
-        if (row.keyExpiresAt && row.keyExpiresAt < now)
+        const row = rows[0];
+        if (row.keyexpiresat && row.keyexpiresat < now)
             return 'expired';
-        // Step 3: async bcrypt.compare — non-blocking, ~100ms
-        if (row.keySecret) {
-            const valid = await bcrypt.compare(rawKey, row.keySecret);
+        if (row.keysecret) {
+            const valid = await bcrypt.compare(rawKey, row.keysecret);
             if (!valid)
                 return null;
         }
-        // Step 4: update lastUsedAt (fire-and-forget)
         try {
-            this.db.prepare('UPDATE api_keys SET lastUsedAt = ? WHERE id = ?').run(now, row.keyId);
+            this.pool.query('UPDATE api_keys SET lastUsedAt = $1 WHERE id = $2', [now, row.keyid]).catch(e => e);
         }
         catch { /* ignore */ }
-        return row;
+        // Map Postgres lowercase keys to expected camelCase
+        return { ...row, keyOrgId: row.keyorgid, organizationId: row.organizationid };
     }
-    createUser(user) {
+    async createUser(user) {
         if (this.isMock) {
             this.mockStore.users.set(user.id, { ...user });
             return;
         }
-        this.db.prepare(`INSERT OR IGNORE INTO users (id, email, organizationId, role) VALUES (?, ?, ?, ?)`).run(user.id, user.email, user.organizationId, user.role);
+        await this.pool.query(`INSERT INTO users (id, email, organizationId, role) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`, [user.id, user.email, user.organizationId, user.role]);
     }
-    getUserById(id) {
+    async getUserById(id) {
         if (this.isMock) {
             return this.mockStore.users.get(id) || null;
         }
-        return this.db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+        const { rows } = await this.pool.query('SELECT * FROM users WHERE id = $1', [id]);
+        if (!rows.length)
+            return null;
+        return { ...rows[0], organizationId: rows[0].organizationid };
     }
     async createApiKey(id, userId, rawKey, organizationId, options = {}) {
         const keyHash = PermissionDB.hashApiKey(rawKey);
-        const keySecret = await PermissionDB.bcryptApiKey(rawKey); // slow hash for verification
+        const keySecret = await PermissionDB.bcryptApiKey(rawKey);
         const keyPrefix = rawKey.substring(0, 12);
         const name = options.name || id;
         const expiresAt = options.expiresAt || null;
@@ -509,30 +391,29 @@ class PermissionDB {
             this.mockStore.api_keys.set(id, { id, userId, keyHash, keySecret, keyPrefix, name, organizationId, status: 'active', expiresAt, createdAt: new Date().toISOString() });
             return;
         }
-        this.db.prepare(`INSERT OR IGNORE INTO api_keys (id, keyHash, keySecret, keyPrefix, name, userId, organizationId, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(id, keyHash, keySecret, keyPrefix, name, userId, organizationId, expiresAt);
+        await this.pool.query(`INSERT INTO api_keys (id, keyHash, keySecret, keyPrefix, name, userId, organizationId, expiresAt) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING`, [id, keyHash, keySecret, keyPrefix, name, userId, organizationId, expiresAt]);
     }
-    revokeApiKey(id) {
+    async revokeApiKey(id) {
         if (this.isMock) {
             const key = this.mockStore.api_keys.get(id);
             if (key)
                 key.status = 'revoked';
             return;
         }
-        this.db.prepare('UPDATE api_keys SET status = ? WHERE id = ?').run('revoked', id);
+        await this.pool.query('UPDATE api_keys SET status = $1 WHERE id = $2', ['revoked', id]);
     }
-    // --- Database Health ---
-    isHealthy() {
+    async isHealthy() {
         if (this.isMock)
             return true;
         try {
-            this.db.prepare('SELECT 1').get();
+            await this.pool.query('SELECT 1');
             return true;
         }
         catch {
             return false;
         }
     }
-    getStats() {
+    async getStats() {
         if (this.isMock) {
             return {
                 users: this.mockStore.users.size,
@@ -542,24 +423,28 @@ class PermissionDB {
                 mode: 'mock'
             };
         }
+        const [u, k, p, a] = await Promise.all([
+            this.pool.query('SELECT COUNT(*) FROM users'),
+            this.pool.query('SELECT COUNT(*) FROM api_keys'),
+            this.pool.query('SELECT COUNT(*) FROM permissions'),
+            this.pool.query('SELECT COUNT(*) FROM approval_requests')
+        ]);
         return {
-            users: this.db.prepare('SELECT COUNT(*) as count FROM users').get().count,
-            apiKeys: this.db.prepare('SELECT COUNT(*) as count FROM api_keys').get().count,
-            permissions: this.db.prepare('SELECT COUNT(*) as count FROM permissions').get().count,
-            approvalRequests: this.db.prepare('SELECT COUNT(*) as count FROM approval_requests').get().count,
-            mode: 'sqlite'
+            users: parseInt(u.rows[0].count),
+            apiKeys: parseInt(k.rows[0].count),
+            permissions: parseInt(p.rows[0].count),
+            approvalRequests: parseInt(a.rows[0].count),
+            mode: 'postgres'
         };
     }
-    // Proxy method so PermissionEngine can call db.prepare() directly
-    prepare(sql) {
-        if (this.isMock) {
-            return { all: (...args) => [] };
-        }
-        return this.db.prepare(sql);
+    async query(sql, params = []) {
+        if (this.isMock)
+            return [];
+        return (await this.pool.query(sql, params)).rows;
     }
-    close() {
-        if (!this.isMock && this.db) {
-            this.db.close();
+    async close() {
+        if (!this.isMock && this.pool) {
+            await this.pool.end();
         }
     }
     mapPermissionRow(row) {
@@ -569,13 +454,50 @@ class PermissionDB {
             resource: row.resource,
             action: row.action,
             conditions: {
-                maxDataSize: row.maxDataSize,
-                maxExecutionTime: row.maxExecutionTime,
-                expiresAt: row.expiresAt ? new Date(row.expiresAt) : undefined,
-                requiresApproval: row.requiresApproval === 1
+                maxDataSize: row.maxDataSize || row.maxdatasize,
+                maxExecutionTime: row.maxExecutionTime || row.maxexecutiontime,
+                expiresAt: (row.expiresAt || row.expiresat) ? new Date(row.expiresAt || row.expiresat) : undefined,
+                requiresApproval: (row.requiresApproval !== undefined ? row.requiresApproval : row.requiresapproval) === 1
             },
-            createdAt: new Date(row.createdAt),
-            createdBy: row.createdBy
+            createdAt: new Date(row.createdAt || row.createdat),
+            createdBy: row.createdBy || row.createdby
+        };
+    }
+    mapApprovalRow(row) {
+        return {
+            ...row,
+            executionId: row.executionId || row.executionid,
+            requestedBy: row.requestedBy || row.requestedby,
+            approvedBy: row.approvedBy || row.approvedby,
+            requestedPermissions: typeof (row.permissions || row.requestedPermissions) === 'string'
+                ? JSON.parse(row.permissions || row.requestedPermissions)
+                : (row.permissions || row.requestedPermissions),
+            expiresAt: new Date(row.expiresAt || row.expiresat),
+            createdAt: new Date(row.createdAt || row.createdat),
+            approvalTime: (row.approvalTime || row.approvaltime) ? new Date(row.approvalTime || row.approvaltime) : undefined,
+            riskScore: row.riskScore || row.riskscore
+        };
+    }
+    mapApprovalRowLite(r) {
+        return {
+            id: r.id,
+            executionId: r.executionId || r.executionid,
+            status: r.status,
+            requestedBy: r.requestedBy || r.requestedby,
+            createdAt: r.createdAt || r.createdat,
+            expiresAt: r.expiresAt || r.expiresat,
+            code: r.code,
+            language: r.language,
+        };
+    }
+    mapApiKeyLite(k) {
+        return {
+            id: k.id,
+            keyPrefix: k.keyPrefix || k.keyprefix,
+            name: k.name || k.id,
+            status: k.status,
+            organizationId: k.organizationId || k.organizationid,
+            createdAt: k.createdAt || k.createdat || new Date().toISOString(),
         };
     }
 }
