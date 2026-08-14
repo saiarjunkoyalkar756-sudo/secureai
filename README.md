@@ -363,3 +363,22 @@ npm run dev
 ⭐ **SecureAI** — *Deploying AI Agents with Confidence.*
 
 **Never run untrusted code again.** 🔒
+
+
+## Why SecureAI?
+
+SecureAI is a safety layer for AI-generated code: it analyzes requested capabilities, applies permission and human-approval policies, executes only within controlled boundaries, and records a signed audit trail. It is a useful foundation for developers building trustworthy agent platforms and compliance-aware automation.
+
+## Verify Before Integrating
+
+```bash
+npm install
+npm run build
+npm test
+```
+
+For local development, use mock mode or an isolated database and Docker environment. Never place production credentials in the repository, and treat the sandbox as a defense-in-depth layer rather than a substitute for least privilege and network isolation.
+
+## Contributing
+
+Contributions are welcome in policy rules, language analyzers, sandbox hardening, SDK ergonomics, documentation, and test coverage. Please include a security rationale, regression tests, and clear threat-model assumptions for changes affecting execution or authorization. Stars help other developers discover the project; forks are encouraged for controlled integrations and research.
