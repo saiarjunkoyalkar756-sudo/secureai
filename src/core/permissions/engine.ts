@@ -210,6 +210,7 @@ export class PermissionEngine {
     // 1. Extract File Paths
     const filePatterns = [
       /read_file\(['"](.+?)['"]/g,        // General
+      /open\(['"](.+?)['"]/g,             // Python open
       /cat\s+([^\s;&|<>]+)/g,             // Bash cat
       /os\.Open\(['"](.+?)['"]/g,         // Go file open
     ];
@@ -225,13 +226,16 @@ export class PermissionEngine {
 
     // 3. Extract Subprocesses
     const subprocessPatterns = [
-      /exec\(['"](.+?)['"]/g,             // Bash exec
+      /exec\(['"](.+?)['"]/g,             // Bash exec / Node exec
+      /os\.system\(['"](.+?)['"]/g,      // Python os.system
     ];
     this.extractMatches(code, subprocessPatterns, analysis.subprocesses);
 
     // 4. Extract Env Vars
     const envPatterns = [
       /getenv\(['"](.+?)['"]/g,           // General
+      /os\.environ\[['"](.+?)['"]\]/g,   // Python os.environ['KEY']
+      /process\.env\.([A-Za-z_][A-Za-z0-9_]*)/g, // Node process.env.KEY
       /\$\{?(\w+)\}?/g                    // Bash (but filter common ones)
     ];
     this.extractMatches(code, envPatterns, analysis.envVarsAccessed);

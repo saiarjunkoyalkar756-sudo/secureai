@@ -22,7 +22,8 @@ export class AuditLogger {
 
   constructor(postgresUrl: string | undefined, signingKey: Buffer) {
     this.signingKey = signingKey;
-    if (postgresUrl) {
+    const useMock = !postgresUrl || postgresUrl === ':memory:' || process.env.JEST_WORKER_ID !== undefined;
+    if (!useMock && postgresUrl) {
       try {
         this.pool = new Pool({
           connectionString: postgresUrl,

@@ -50,7 +50,7 @@ export const authenticateApiKey = async (
 
     res.set('WWW-Authenticate', 'Bearer realm="SecureAI", error="missing_token"');
     res.status(401).json({
-      error: 'Unauthorized',
+      error: 'Missing authentication token',
       code:  'MISSING_TOKEN',
       details: 'Provide a valid Bearer token in the Authorization header'
     });
@@ -77,8 +77,8 @@ export const authenticateApiKey = async (
     if (!result) {
       res.set('WWW-Authenticate', 'Bearer realm="SecureAI", error="invalid_token", error_description="API key is invalid or revoked"');
       res.status(401).json({
-        error: 'Unauthorized',
-        code:  'INVALID_KEY',
+      error: 'Invalid API key',
+      code:  'INVALID_KEY',
         details: 'The provided API key does not exist or has been revoked.'
       });
       return;
