@@ -38,21 +38,57 @@ export class PermissionDB {
   }
 
   private initMockStore() {
-    const adminId = 'user_admin_static';
-    const orgId = 'org_5977a082-1e0';
-    const keyId = 'key_static_01';
-    const keyPrefix = 'sk_live_3569';
-    const keyHash = '8b843e028e54d214292a197f1d436ff1e84a341977e9d9c0f26fa950a864e947';
-    const keySecret = '$2b$10$RjzXmUCkpmmq94D.nhlBM.YPzWWLRSdOUOhtv1r4RD2C9wAFggJgq';
+    const seedKey = (
+      userId: string,
+      email: string,
+      role: 'admin' | 'executor' | 'approver',
+      organizationId: string,
+      keyId: string,
+      rawKey: string,
+      name: string
+    ) => {
+      this.mockStore.users.set(userId, { id: userId, email, organizationId, role });
+      this.mockStore.api_keys.set(keyId, {
+        id: keyId,
+        keyHash: PermissionDB.hashApiKey(rawKey),
+        keyPrefix: rawKey.substring(0, 12),
+        name,
+        userId,
+        organizationId,
+        status: 'active'
+      });
+    };
 
-    this.mockStore.users.set(adminId, {
-      id: adminId, email: 'admin@secureai.io', organizationId: orgId, role: 'admin'
-    });
-    this.mockStore.api_keys.set(keyId, {
-      id: keyId, keyHash, keySecret, keyPrefix, name: 'Vercel Permanent Admin Key',
-      userId: adminId, organizationId: orgId, status: 'active'
-    });
-    console.log('[Database] ✅ Auto-seeded In-Memory Mock Admin API Key');
+    seedKey(
+      'user_admin_static',
+      'admin@secureai.io',
+      'admin',
+      'org_5977a082-1e0',
+      'key_static_01',
+      'sk_live_3569_admin_static',
+      'Vercel Permanent Admin Key'
+    );
+
+    // Deterministic fixtures used by the local integration suite.
+    seedKey(
+      'user_test_admin',
+      'admin@test.secureai.io',
+      'admin',
+      'org_test',
+      'key_test_admin',
+      'sk_test_admin_123456',
+      'Test Admin Key'
+    );
+    seedKey(
+      'user_test_executor',
+      'executor@test.secureai.io',
+      'executor',
+      'org_test',
+      'key_test_executor',
+      'sk_test_executor_789',
+      'Test Executor Key'
+    );
+    console.log('[Database] ✅ Auto-seeded In-Memory Mock API Keys');
   }
 
   private async initializeDatabase() {

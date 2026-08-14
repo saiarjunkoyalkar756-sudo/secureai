@@ -99,7 +99,7 @@ describe('AuditLogger', () => {
       await logger.log({ timestamp: new Date(), executionId: 'e2', userId: 'u1', action: 'b', resourcesBefore: {}, resourcesAfter: {}, metadata: {} });
       await logger.log({ timestamp: new Date(), executionId: 'e3', userId: 'u1', action: 'c', resourcesBefore: {}, resourcesAfter: {}, metadata: {} });
 
-      const result = logger.verifyIntegrity();
+      const result = await logger.verifyIntegrity();
       expect(result.valid).toBe(true);
       expect(result.tamperedIds).toHaveLength(0);
     });
@@ -108,7 +108,7 @@ describe('AuditLogger', () => {
       await logger.log({ timestamp: new Date(), executionId: 'e1', userId: 'u1', action: 'a', resourcesBefore: {}, resourcesAfter: {}, metadata: {} });
       await logger.log({ timestamp: new Date(), executionId: 'e2', userId: 'u1', action: 'b', resourcesBefore: {}, resourcesAfter: {}, metadata: {} });
       
-      expect(logger.getEntryCount()).toBe(2);
+      await expect(logger.getEntryCount()).resolves.toBe(2);
     });
   });
 });
